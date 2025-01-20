@@ -1,5 +1,5 @@
 [project]
-name = "finantial-tracker"
+name = "financial-tracker"
 version = "0.0.1"
 description = "Financial tracking tool for bookkeeping, planning, projection, etc."
 keywords = [
@@ -17,7 +17,11 @@ authors = [
   {name = "Kevin Lin", email = "klinime@gmail.com"},
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "six>=1.16.0",
+  "pandas",
+  "pdfplumber",
+]
 
 [project.optional-dependencies]
 
