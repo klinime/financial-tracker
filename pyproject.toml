@@ -20,7 +20,7 @@ requires-python = ">=3.12"
 dependencies = [
   "six>=1.16.0",
   "pandas",
-  "pdfplumber",
+  "PyMuPDF",
 ]
 
 [project.optional-dependencies]
