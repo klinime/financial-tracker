@@ -81,6 +81,8 @@ def pdf_margin_offsets(doc: fitz.Document) -> tuple[int, int]:
         ]
         header_offset = -1
         footer_offset = -1
+        header_line_count = 0
+        footer_line_count = 0
         # equivalent to prefix / suffix matches against each reference text block
         for ref_text_blocks in cur_ref_blocks:
             for ref_text_block, page_text_block in zip(
@@ -89,6 +91,7 @@ def pdf_margin_offsets(doc: fitz.Document) -> tuple[int, int]:
             ):
                 if text_block_equivalent(ref_text_block, page_text_block):
                     header_offset = page_text_block["bbox"][3]
+                    header_line_count += len(page_text_block["lines"])
                 else:
                     break
             for ref_text_block, page_text_block in zip(
@@ -97,23 +100,25 @@ def pdf_margin_offsets(doc: fitz.Document) -> tuple[int, int]:
             ):
                 if text_block_equivalent(ref_text_block, page_text_block):
                     footer_offset = page_text_block["bbox"][1]
+                    footer_line_count += len(page_text_block["lines"])
                 else:
                     break
-        if header_offset != -1:
+        # at least 2 lines of text to be considered the header or footer
+        if header_offset != -1 and header_line_count > 2:
             header_offsets.append(header_offset)
-        if footer_offset != -1:
+        if footer_offset != -1 and footer_line_count > 2:
             footer_offsets.append(footer_offset)
 
-    header_offset = np.median(header_offsets) if header_offsets else 0
-    footer_offset = np.median(footer_offsets) if footer_offsets else doc[0].rect.height
+    header_offset = min(header_offsets) if header_offsets else 0
+    footer_offset = max(footer_offsets) if footer_offsets else doc[0].rect.height
     logger.debug(f"{header_offset=} {footer_offset=}")
     for page_num in range(ref_page_count):
-        logger.debug(
-            f"removed_header:\n{doc[page_num].get_text(clip=fitz.Rect(0, 0, doc[page_num].rect.width, header_offset))}"
+        header_clip = fitz.Rect(0, 0, doc[page_num].rect.width, header_offset)
+        logger.debug(f"removed_header:\n{doc[page_num].get_text(clip=header_clip)}")
+        footer_clip = fitz.Rect(
+            0, footer_offset, doc[page_num].rect.width, doc[page_num].rect.height
         )
-        logger.debug(
-            f"removed_footer:\n{doc[page_num].get_text(clip=fitz.Rect(0, footer_offset, doc[page_num].rect.width, doc[page_num].rect.height))}"
-        )
+        logger.debug(f"removed_footer:\n{doc[page_num].get_text(clip=footer_clip)}")
 
     return header_offset, footer_offset
 
@@ -197,9 +202,16 @@ if __name__ == "__main__":
 
     import pathlib
 
+    dirs = [
+        "../../data/income",
+        "../../data/brokerage",
+        "../../data/bank",
+        "../../data/expense",
+    ]
     docs = [
         fitz.open(str(pdf_path))
-        for pdf_path in pathlib.Path("../../data").glob("*.pdf", case_sensitive=False)
+        for dir in dirs
+        for pdf_path in pathlib.Path(dir).glob("*.pdf", case_sensitive=False)
     ]
     pages: list[fitz.Page] = []
     for doc in docs:
@@ -209,7 +221,7 @@ if __name__ == "__main__":
     for page in pages:
         new_page = output_pdf.new_page(width=page.rect.width, height=page.rect.height)
         new_page.show_pdf_page(new_page.rect, page.parent, page.number)
-    output_pdf.save("output.pdf")
+    output_pdf.save("statements.pdf")
     output_pdf.close()
 
     for doc in docs:
