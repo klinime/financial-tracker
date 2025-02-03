@@ -1,7 +1,7 @@
-import json
 import logging
 import re
-import sys
+from itertools import accumulate
+from sys import maxsize
 from typing import Any
 
 import fitz
@@ -58,7 +58,7 @@ def pdf_margin_offsets(doc: fitz.Document) -> tuple[int, int]:
         ]
         for page_num in range(ref_page_count)
     ]
-    header_offset = sys.maxsize
+    header_offset = maxsize
     footer_offset = 0
     for page_num in range(1, doc.page_count):
         # dedplicate equivalence checks between the reference pages
@@ -102,7 +102,7 @@ def pdf_margin_offsets(doc: fitz.Document) -> tuple[int, int]:
             header_offset = min(header_offset, header_bottom)
         if footer_top != doc[page_num].rect.height and footer_line_count > 2:
             footer_offset = max(footer_offset, footer_top)
-    if header_offset == sys.maxsize:
+    if header_offset == maxsize:
         header_offset = 0
     if footer_offset == 0:
         footer_offset = doc[0].rect.height
@@ -193,19 +193,7 @@ def extract_pdf_pages(doc: fitz.Document) -> list[fitz.Page]:
     return pages
 
 
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    logger = logging.getLogger(__name__)
-
-    import pathlib
-    from itertools import accumulate
-
-    data_dir = pathlib.Path("../../data")
-    categories = ["income", "brokerage", "bank", "expense"]
-    dirs = [data_dir / category for category in categories]
-    globs = [list(dir.glob("*.pdf", case_sensitive=False)) for dir in dirs]
-    cat_indices = sum([[i] * len(glob) for i, glob in enumerate(globs)], [])
-    paths = [str(path) for glob in globs for path in glob]
+def concat_pdfs(paths: list[str], output_path: str) -> tuple[list[int], list[int]]:
     docs = [fitz.open(path) for path in paths]
     pages: list[fitz.Page] = []
     page_counts = []
@@ -213,24 +201,7 @@ if __name__ == "__main__":
         pdf_pages = extract_pdf_pages(doc)
         pages.extend(pdf_pages)
         page_counts.append(len(pdf_pages))
-    page_ends = list(accumulate(page_counts))
-    page_starts = [0] + list(page_ends[:-1])
 
-    with open(data_dir / "metadata.json", "w") as f:
-        json.dump(
-            {
-                path: {
-                    "page_start": page_start,
-                    "page_end": page_end,
-                    "category": categories[cat_index],
-                }
-                for path, page_start, page_end, cat_index in zip(
-                    paths, page_starts, page_ends, cat_indices
-                )
-            },
-            f,
-            indent=4,
-        )
     max_width = max(page.rect.width for page in pages)
     output_pdf = fitz.open()
     for page in pages:
@@ -243,8 +214,12 @@ if __name__ == "__main__":
             x_offset, 0, x_offset + original_width, original_height
         )
         new_page.show_pdf_page(new_page_rect, page.parent, page.number)
-    output_pdf.save(data_dir / "statements.pdf")
+    output_pdf.save(output_path)
     output_pdf.close()
 
     for doc in docs:
         doc.close()
+
+    page_ends = list(accumulate(page_counts))
+    page_starts = [0] + list(page_ends[:-1])
+    return page_starts, page_ends
