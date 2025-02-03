@@ -1,5 +1,7 @@
+import json
 import logging
 import re
+import sys
 from typing import Any
 
 import fitz
@@ -32,15 +34,6 @@ def text_block_equivalent(
     return True
 
 
-def page_blocks_equivalent(
-    page_blocks1: list[dict[str, Any]], page_blocks2: list[dict[str, Any]]
-) -> bool:
-    return all(
-        text_block_equivalent(block1, block2)
-        for block1, block2 in zip(page_blocks1, page_blocks2)
-    )
-
-
 def sorted_header_blocks(text_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     # sort by bottom of the block because excluding header goes from bottom to top
     return sorted(text_blocks, key=lambda block: block["bbox"][3])
@@ -65,8 +58,8 @@ def pdf_margin_offsets(doc: fitz.Document) -> tuple[int, int]:
         ]
         for page_num in range(ref_page_count)
     ]
-    header_offsets = []
-    footer_offsets = []
+    header_offset = sys.maxsize
+    footer_offset = 0
     for page_num in range(1, doc.page_count):
         # dedplicate equivalence checks between the reference pages
         cur_ref_blocks = [
@@ -79,38 +72,42 @@ def pdf_margin_offsets(doc: fitz.Document) -> tuple[int, int]:
             for block in doc[page_num].get_text("dict")["blocks"]
             if block["type"] == 0
         ]
-        header_offset = -1
-        footer_offset = -1
+        header_bottom = 0
+        footer_top = doc[page_num].rect.height
         header_line_count = 0
         footer_line_count = 0
-        # equivalent to prefix / suffix matches against each reference text block
         for ref_text_blocks in cur_ref_blocks:
+            # check against reference header blocks for equivalent prefixes
             for ref_text_block, page_text_block in zip(
                 sorted_header_blocks(ref_text_blocks),
                 sorted_header_blocks(page_text_blocks),
             ):
                 if text_block_equivalent(ref_text_block, page_text_block):
-                    header_offset = page_text_block["bbox"][3]
+                    header_bottom = page_text_block["bbox"][3]
                     header_line_count += len(page_text_block["lines"])
                 else:
                     break
+            # check against reference footer blocks for equivalent suffixes
             for ref_text_block, page_text_block in zip(
                 sorted_footer_blocks(ref_text_blocks),
                 sorted_footer_blocks(page_text_blocks),
             ):
                 if text_block_equivalent(ref_text_block, page_text_block):
-                    footer_offset = page_text_block["bbox"][1]
+                    footer_top = page_text_block["bbox"][1]
                     footer_line_count += len(page_text_block["lines"])
                 else:
                     break
         # at least 2 lines of text to be considered the header or footer
-        if header_offset != -1 and header_line_count > 2:
-            header_offsets.append(header_offset)
-        if footer_offset != -1 and footer_line_count > 2:
-            footer_offsets.append(footer_offset)
+        if header_bottom != 0 and header_line_count > 2:
+            header_offset = min(header_offset, header_bottom)
+        if footer_top != doc[page_num].rect.height and footer_line_count > 2:
+            footer_offset = max(footer_offset, footer_top)
+    if header_offset == sys.maxsize:
+        header_offset = 0
+    if footer_offset == 0:
+        footer_offset = doc[0].rect.height
 
-    header_offset = min(header_offsets) if header_offsets else 0
-    footer_offset = max(footer_offsets) if footer_offsets else doc[0].rect.height
+    # debug info for texts removed via header / footer clipping
     logger.debug(f"{header_offset=} {footer_offset=}")
     for page_num in range(ref_page_count):
         header_clip = fitz.Rect(0, 0, doc[page_num].rect.width, header_offset)
@@ -201,27 +198,52 @@ if __name__ == "__main__":
     logger = logging.getLogger(__name__)
 
     import pathlib
+    from itertools import accumulate
 
-    dirs = [
-        "../../data/income",
-        "../../data/brokerage",
-        "../../data/bank",
-        "../../data/expense",
-    ]
-    docs = [
-        fitz.open(str(pdf_path))
-        for dir in dirs
-        for pdf_path in pathlib.Path(dir).glob("*.pdf", case_sensitive=False)
-    ]
+    data_dir = pathlib.Path("../../data")
+    categories = ["income", "brokerage", "bank", "expense"]
+    dirs = [data_dir / category for category in categories]
+    globs = [list(dir.glob("*.pdf", case_sensitive=False)) for dir in dirs]
+    cat_indices = sum([[i] * len(glob) for i, glob in enumerate(globs)], [])
+    paths = [str(path) for glob in globs for path in glob]
+    docs = [fitz.open(path) for path in paths]
     pages: list[fitz.Page] = []
+    page_counts = []
     for doc in docs:
-        pages.extend(extract_pdf_pages(doc))
+        pdf_pages = extract_pdf_pages(doc)
+        pages.extend(pdf_pages)
+        page_counts.append(len(pdf_pages))
+    page_ends = list(accumulate(page_counts))
+    page_starts = [0] + list(page_ends[:-1])
 
+    with open(data_dir / "metadata.json", "w") as f:
+        json.dump(
+            {
+                path: {
+                    "page_start": page_start,
+                    "page_end": page_end,
+                    "category": categories[cat_index],
+                }
+                for path, page_start, page_end, cat_index in zip(
+                    paths, page_starts, page_ends, cat_indices
+                )
+            },
+            f,
+            indent=4,
+        )
+    max_width = max(page.rect.width for page in pages)
     output_pdf = fitz.open()
     for page in pages:
-        new_page = output_pdf.new_page(width=page.rect.width, height=page.rect.height)
-        new_page.show_pdf_page(new_page.rect, page.parent, page.number)
-    output_pdf.save("statements.pdf")
+        original_width = page.rect.width
+        original_height = page.rect.height
+        # pad to the widest page for more consistent processing
+        new_page = output_pdf.new_page(width=max_width, height=original_height)
+        x_offset = (max_width - original_width) / 2
+        new_page_rect = fitz.Rect(
+            x_offset, 0, x_offset + original_width, original_height
+        )
+        new_page.show_pdf_page(new_page_rect, page.parent, page.number)
+    output_pdf.save(data_dir / "statements.pdf")
     output_pdf.close()
 
     for doc in docs:
