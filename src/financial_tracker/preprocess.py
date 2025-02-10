@@ -1,11 +1,21 @@
 import csv
-import io
 import json
-import logging
 import os
+from io import StringIO
+from itertools import takewhile
+from logging import getLogger
+from math import ceil
 
 import dateutil  # type: ignore[import-untyped]
 import pandas as pd
+
+
+def is_date_form(header: str) -> bool:
+    try:
+        dateutil.parser.parse(header)
+        return True
+    except Exception:
+        return False
 
 
 def is_string_form(header: str) -> bool:
@@ -14,11 +24,8 @@ def is_string_form(header: str) -> bool:
         return True
 
     # dates are not strings
-    try:
-        dateutil.parser.parse(header)
+    if is_date_form(header):
         return False
-    except Exception:
-        pass
 
     headers_to_try = [header]
     if not header[0].isdigit():
@@ -56,42 +63,16 @@ def split_df_columns(columns: list[str | int], target_num_cols: int) -> list[str
     return columns
 
 
-def squeeze_df(df: pd.DataFrame) -> pd.DataFrame:
-    # squeeze NA values from df and return if the resulting df is of valid shape
-    if df.empty:
-        return df
-    non_nan_values = [cell for cell in df.stack().tolist() if cell]
-    if len(non_nan_values) == df.size:
-        return df
-
-    # squeezing NA values only reduces the number of columns and not rows
-    num_rows = df.shape[0]
-    if len(non_nan_values) % num_rows != 0:
-        return pd.DataFrame()
-    num_cols = len(non_nan_values) // num_rows
-    # format back with original indices and columns
-    return pd.DataFrame(
-        [
-            non_nan_values[i : i + num_cols]
-            for i in range(0, len(non_nan_values), num_cols)
-        ],
-        index=df.index,
-        columns=split_df_columns(df.columns, num_cols),
-    )
-
-
 def clean_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    # drop empty columns
+    # drop empty rows and columns
     df.replace("", None, inplace=True)
+    df.dropna(how="all", axis=0, inplace=True)
     df.dropna(how="all", axis=1, inplace=True)
     columns = split_df_columns(df.columns, df.columns.size)
     if len(columns) == df.columns.size:
         df.columns = columns
-    squeezed_df = squeeze_df(df)
-    if not squeezed_df.empty:
-        df = squeezed_df
     return df
 
 
@@ -101,7 +82,7 @@ def clean_string(string: str) -> str:
 
 class PDFTextBuilder:
     def __init__(self, data_dir: str):
-        self.logger = logging.getLogger(__name__)
+        self.logger = getLogger(__name__)
         self.extract_dir = os.path.join(data_dir, "extract")
         data = json.load(open(os.path.join(self.extract_dir, "structuredData.json")))
         self.elements = [
@@ -117,7 +98,7 @@ class PDFTextBuilder:
         self.pdf_text = f"<{self.category}>\n<doc{self.doc_num}>\n<page0>\n"
 
     def tag_metadata(self, page: int, next_page: int) -> None:
-        # append metadata as html like tags to self.pdf_text
+        # append metadata as xml like tags to self.pdf_text
         # metadata is in the order of category -> document -> page
         if next_page == -1:
             self.pdf_text += f"</page{self.metadata[-1]['page_end'] - 1}>\n"
@@ -139,12 +120,8 @@ class PDFTextBuilder:
             tag_text += f"<page{next_page}>\n"
         self.pdf_text += tag_text
 
-    def process_table(self, file_path: str) -> str:
-        # append table as a string to self.pdf_text
-        table_text = ""
-        merged_header = []
-        merged_text = ""
-        path = os.path.join(self.extract_dir, file_path)
+    def read_csv(self, file_path: str, merged_header: list[str]) -> pd.DataFrame:
+        file_path = os.path.join(self.extract_dir, file_path)
         read_csv_kwargs = {
             "header": None,
             "dtype": str,
@@ -153,30 +130,124 @@ class PDFTextBuilder:
             "index_col": False,
         }
         try:
-            df = pd.read_csv(path, **read_csv_kwargs)
+            df = pd.read_csv(file_path, **read_csv_kwargs)
         except Exception:
-            try:
-                # first row could be a merged header which tends to be problematic when parsing
-                df = pd.read_csv(path, **read_csv_kwargs, skiprows=1)
-                with open(path, encoding="utf-8-sig") as f:
-                    reader = csv.reader(f)
-                    merged_header = [
-                        cell for cell in map(clean_string, next(reader)) if cell
+            # first couple of rows could be a merged header which tends to be problematic when parsing
+            # or the headers are accidentally split into multiple rows
+            with open(file_path, encoding="utf-8-sig") as f:
+                reader = csv.reader(f)
+                rows = [list(map(clean_string, row)) for row in reader]
+            col_counts = [len(row) for row in rows]
+            expected_col_count = max(col_counts, key=col_counts.count)
+            # leading rows that do not have the expected number of columns
+            merged_header_rows = sum(
+                1 for _ in takewhile(lambda x: x != expected_col_count, col_counts)
+            )
+            for row in rows[:merged_header_rows]:
+                for cell in row:
+                    if cell:
+                        merged_header.append(cell)
+            # leading rows that when combined, have the expected number of columns
+            split_header_rows = 0
+            split_headers = []
+            for row in rows:
+                split_header_rows += 1
+                split_headers.extend([cell for cell in row if cell])
+                if len(split_headers) == expected_col_count:
+                    break
+                elif len(split_headers) > expected_col_count:
+                    split_header_rows = 0
+                    split_headers = []
+                    break
+
+            if merged_header_rows:
+                # scenario 1: the headers are merged
+                df = pd.read_csv(
+                    file_path, **read_csv_kwargs, skiprows=merged_header_rows
+                )
+                if split_header_rows:
+                    # scenario 2: the headers are split into multiple rows
+                    if split_header_rows > merged_header_rows:
+                        offset = split_header_rows - merged_header_rows
+                        df.iloc[offset - 1] = split_headers
+                        df = df.iloc[offset - 1 :]
+                        del merged_header[:]
+                    else:
+                        df = df.iloc[merged_header_rows:]
+                        df = pd.concat([pd.DataFrame(split_headers), df])
+                    df.reset_index(drop=True, inplace=True)
+        return df
+
+    def merge_split_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        # some rows are accidentally split into multiple rows with disjoint columns
+        df_rows: list[pd.Series] = []
+        while df.shape[0] != len(df_rows):
+            i = 0
+            while i < df.shape[0]:
+                if (
+                    i == df.shape[0] - 1
+                    or not (df.iloc[i].isna() | df.iloc[i + 1].isna()).all()
+                ):
+                    df_rows.append(df.iloc[i])
+                else:
+                    concat_row = pd.Series(index=range(df.iloc[i].size), dtype=str)
+                    concat_row[~df.iloc[i].isna()] = df.iloc[i][~df.iloc[i].isna()]
+                    concat_row[~df.iloc[i + 1].isna()] = df.iloc[i + 1][
+                        ~df.iloc[i + 1].isna()
                     ]
-                merged_text = "\n" + " ".join(merged_header).strip()
-                table_text = merged_text.strip()
-            except Exception:
-                self.pdf_text += f"Raw table: {file_path}\n"
-                return table_text
+                    df_rows.append(concat_row)
+                    i += 1
+                i += 1
+            if df.shape[0] != len(df_rows):
+                df = pd.DataFrame(df_rows)
+                df.reset_index(drop=True, inplace=True)
+        return df
+
+    def merge_split_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        # some columns are accidentally split into multiple columns at some offset
+        df_rows = []
+        na_per_row = df.isna().sum(axis=1)
+        while na_per_row.min() > 0:
+            for row in df.itertuples(index=False):
+                row_list = list(row)
+                nan_index = row_list.index(None)
+                row_list.pop(nan_index)
+                df_rows.append(row_list)
+            df = pd.DataFrame(df_rows)
+            df_rows = []
+            na_per_row = df.isna().sum(axis=1)
+        # for some reason, there are some columns that are all NaN except for one row
+        non_nan_per_col = df.iloc[1:].notna().sum(axis=0)
+        for i in reversed(range(df.shape[1] - 1)):
+            if non_nan_per_col.iloc[i] == 1 and df.iloc[0, i + 1] is None:
+                df.iloc[0, i + 1] = df.iloc[0, i]
+                df = df.drop(df.columns[i], axis=1)
+        return df
+
+    def process_table(self, file_path: str) -> str:
+        # append table as a string to self.pdf_text
+        merged_header: list[str] = []
+        try:
+            df = self.read_csv(os.path.join(self.extract_dir, file_path), merged_header)
+        except Exception:
+            self.pdf_text += f"Raw table: {file_path}\n"
+            return ""
+        merged_text = ""
+        table_text = ""
+        if merged_header:
+            merged_text = "\n" + " ".join(merged_header).strip()
+            table_text = merged_text.strip()
 
         df = df.map(clean_string)
         df = clean_df(df)
         # extract plain text from table for matching with text blocks afterwards
         table_text += " ".join(df.stack().reset_index(drop=True)).strip()
 
+        df = self.merge_split_rows(df)
+        df = self.merge_split_columns(df)
+
         has_header = all(is_string_form(header) for header in df.iloc[0])
         has_index = all(is_string_form(index) for index in df.iloc[:, 0])
-
         # preprocess table header and index to prepare for json parsing
         if has_header:
             df.columns = df.iloc[0]
@@ -185,29 +256,55 @@ class PDFTextBuilder:
             if has_index:
                 df = df.set_index(df.columns[0])
                 df = clean_df(df)
-            # achieve unique column names by prepending merged headers
-            if len(merged_header) > 1 and df.columns.size > len(merged_header):
-                merge_size = df.columns.size // len(merged_header)
-                df.columns = [
-                    f"{merged_header[i // merge_size]} {column}"
-                    for i, column in enumerate(df.columns)
-                ]
-                df = clean_df(df)
+            if merged_header:
+                if len(merged_header) == df.columns.isna().sum():
+                    # fill in missing columns with merged headers
+                    columns = df.columns.to_numpy()
+                    columns[df.columns.isna()] = merged_header
+                    df.columns = columns
+                elif (
+                    len(merged_header) > 1
+                    and not df.columns.is_unique
+                    and df.columns.size > len(merged_header)
+                ):
+                    # achieve unique column names by prepending merged headers
+                    merge_size = ceil(df.columns.size / len(merged_header))
+                    df.columns = [
+                        f"{merged_header[i // merge_size]} {column}"
+                        for i, column in enumerate(df.columns)
+                    ]
 
-        # parse table to json
-        orient = (
-            "index"
-            if has_header and has_index
-            else "records" if has_header else "values"
-        )
+        # empty after processing
+        if df.empty:
+            self.pdf_text += f"Raw table: {file_path}\n"
+            return ""
+        # if the table is too sparse, it's probably not a well-formed table
+        if df.isna().values.sum() / df.size > 0.2 and df.isna().sum(axis=0).min() > 0:
+            self.pdf_text += f"Raw table: {file_path}\n"
+            return ""
+
+        self.pdf_text += f"Parsed table: {file_path}{merged_text}\n"
+        if df.shape[0] > 0:
+            first_row = df.iloc[0]
+            if (
+                len(first_row) > 6
+                and is_date_form(first_row.iloc[0])
+                and first_row.iloc[1:6].isna().all()
+            ):
+                # assume is calendar, which we don't need to parse
+                return table_text
         try:
-            self.pdf_text += f"Parsed table: {file_path}{merged_text}\n"
-            self.pdf_text += json.dumps(json.loads(df.to_json(orient=orient)), indent=2)
+            # parse table to json
+            orient = (
+                "index"
+                if has_header and has_index
+                else "records" if has_header else "values"
+            )
+            self.pdf_text += df.to_json(orient=orient, indent=2)
         except Exception:
             # fallback to csv
-            csv_string = io.StringIO()
+            csv_string = StringIO()
             df.to_csv(csv_string)
-            self.pdf_text += f"Semi-parsed table: {file_path}{merged_text}\n"
             self.pdf_text += csv_string.getvalue()
             csv_string.close()
         self.pdf_text += "\n"
@@ -241,7 +338,7 @@ class PDFTextBuilder:
         return None
 
     def process_pdf_data(self) -> str:
-        table_text: str | None = None
+        table_text: str | None = ""
         for i, element in enumerate(self.elements):
             next_element = self.elements[i + 1] if i < len(self.elements) - 1 else None
             if "filePaths" in element:

@@ -12,3 +12,9 @@ python -m build
 pip install dist/*.whl
 pip install -e .
 ```
+
+## Usage
+
+```console
+python -m financial_tracker
+```

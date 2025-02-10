@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-import pathlib
+from pathlib import Path
 
 from financial_tracker.pdf import concat_pdfs
 from financial_tracker.pdf_services import PDFTextTableExtractor
@@ -10,10 +10,11 @@ from financial_tracker.preprocess import PDFTextBuilder
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("adobe.pdfservices").setLevel(logging.ERROR)
     logger = logging.getLogger(__name__)
 
-    data_dir = pathlib.Path("../../data")
-    categories = ["income", "brokerage", "bank", "expense"]
+    data_dir = Path("../../data")
+    categories = ["income", "bank", "expense"]
     dirs = [data_dir / category for category in categories]
     globs = [list(dir.glob("*.pdf", case_sensitive=False)) for dir in dirs]
     cat_indices = sum([[i] * len(glob) for i, glob in enumerate(globs)], [])

@@ -1,6 +1,6 @@
-import logging
 import re
 from itertools import accumulate
+from logging import getLogger
 from sys import maxsize
 from typing import Any
 
@@ -45,7 +45,7 @@ def sorted_footer_blocks(text_blocks: list[dict[str, Any]]) -> list[dict[str, An
 
 
 def pdf_margin_offsets(doc: fitz.Document) -> tuple[int, int]:
-    logger = logging.getLogger(__name__)
+    logger = getLogger(__name__)
 
     # reference text blocks assumes maximally 2 pages before the start of the content page
     # page 0: cover, page 1: terms or summary, page 2: content
@@ -173,8 +173,58 @@ def is_two_column_page(page: fitz.Page) -> bool:
     )
 
 
+def mask_sensitive_info(page: fitz.Page) -> fitz.Page:
+    logger = getLogger(__name__)
+    regexes = [
+        re.compile(rf"{identifier}[:]? (\d+)")
+        for identifier in [
+            "Account Number",
+            "Trace Number",
+            "Member Number",
+            "Employee Number",
+        ]
+    ]
+
+    fitz.TOOLS.set_small_glyph_heights(True)
+    # x0, y0, x1, y1, text, block_no, line_no, word_no = word
+    words = page.get_text("words")
+    text = " ".join([word[4] for word in words])
+    results = [match.span(1) for regex in regexes for match in regex.finditer(text)]
+    word_offsets = [i - 1 for i in accumulate([len(word[4]) + 1 for word in words])]
+    for result in results:
+        start, end = result
+        redact_text = text[start:end]
+        start_idx = next(
+            (i for i in range(len(word_offsets)) if word_offsets[i] >= start),
+            len(word_offsets),
+        )
+        end_idx = (
+            next(
+                (i for i in range(len(word_offsets)) if word_offsets[i] >= end),
+                len(word_offsets),
+            )
+            + 1
+        )
+        # create the bounding box of the identified pii entity
+        entity_bbox = fitz.Rect(words[start_idx][:4])
+        for word in words[start_idx + 1 : end_idx]:
+            entity_bbox |= fitz.Rect(word[:4])
+        actual_text = page.get_text(clip=entity_bbox).strip()
+        page.add_redact_annot(entity_bbox, fill=(1, 1, 1))
+        page.apply_redactions(text=1)
+        logger.debug(f"expect to redact: {redact_text}")
+        logger.debug(f"actually redacted: {actual_text}")
+        if redact_text != actual_text:
+            logger.warning(
+                f"Mismatch between expected and actual text: {redact_text} != {actual_text}"
+            )
+
+    fitz.TOOLS.set_small_glyph_heights(False)
+    return page
+
+
 def extract_pdf_pages(doc: fitz.Document) -> list[fitz.Page]:
-    logger = logging.getLogger(__name__)
+    logger = getLogger(__name__)
 
     pages: list[fitz.Page] = []
     header_offset, footer_offset = pdf_margin_offsets(doc)
@@ -189,6 +239,7 @@ def extract_pdf_pages(doc: fitz.Document) -> list[fitz.Page]:
         if is_two_column_page(page):
             logger.debug(f"Page excluded: {page.number=}")
             continue
+        page = mask_sensitive_info(page)
         pages.append(page)
     return pages
 
@@ -202,7 +253,8 @@ def concat_pdfs(paths: list[str], output_path: str) -> tuple[list[int], list[int
         pages.extend(pdf_pages)
         page_counts.append(len(pdf_pages))
 
-    max_width = max(page.rect.width for page in pages)
+    # pad half an inch of margin to the left and right of the widest page
+    max_width = max(page.rect.width for page in pages) + 72
     output_pdf = fitz.open()
     for page in pages:
         original_width = page.rect.width
@@ -214,7 +266,7 @@ def concat_pdfs(paths: list[str], output_path: str) -> tuple[list[int], list[int
             x_offset, 0, x_offset + original_width, original_height
         )
         new_page.show_pdf_page(new_page_rect, page.parent, page.number)
-    output_pdf.save(output_path)
+    output_pdf.save(output_path, garbage=4, clean=True, deflate=True)
     output_pdf.close()
 
     for doc in docs:
