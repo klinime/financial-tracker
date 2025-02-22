@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from financial_tracker.llm import FinancialLLM
 from financial_tracker.pdf import concat_pdfs
 from financial_tracker.pdf_services import PDFTextTableExtractor
 from financial_tracker.preprocess import PDFTextBuilder
@@ -37,6 +38,7 @@ def main() -> None:
             paths, page_starts, page_ends, cat_indices
         )
     }
+
     extract_dir = str(data_dir / "extract")
     if os.path.exists(metadata_path) and metadata == json.load(open(metadata_path)):
         logger.info(f"Metadata already exists in {metadata_path=}")
@@ -51,12 +53,19 @@ def main() -> None:
         )
         extractor.extract_text_table(statements_path, extract_dir)
         logger.info(f"Extracted data saved to {extract_dir=}")
+
     pdf_text_builder = PDFTextBuilder(str(data_dir))
     pdf_text = pdf_text_builder.process_pdf_data()
     pdf_text_path = str(data_dir / "pdf_text.txt")
     with open(pdf_text_path, "w") as f:
         f.write(pdf_text)
     logger.info(f"PDF text saved to {pdf_text_path=}")
+
+    llm = FinancialLLM(str(data_dir / "examples.txt"))
+    response = llm.generate_text(pdf_text)
+    with open(str(data_dir / "transactions.json"), "w") as f:
+        json.dump(json.loads(response), f, indent=4)
+    logger.info(f"Transactions saved to {str(data_dir / 'transactions.json')=}")
 
 
 if __name__ == "__main__":
