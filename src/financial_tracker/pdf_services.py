@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 import zipfile
@@ -24,11 +23,10 @@ from adobe.pdfservices.operation.pdfjobs.result.extract_pdf_result import (
 
 
 class PDFTextTableExtractor:
-    def __init__(self, credential_path: str):
-        credential_json = json.load(open(credential_path))
+    def __init__(self) -> None:
         credentials = ServicePrincipalCredentials(
-            client_id=credential_json["client_credentials"]["client_id"],
-            client_secret=credential_json["client_credentials"]["client_secret"],
+            client_id=os.getenv("PDF_SERVICES_CLIENT_ID"),
+            client_secret=os.getenv("PDF_SERVICES_CLIENT_SECRET"),
         )
         self.pdf_services = PDFServices(credentials=credentials)
 
