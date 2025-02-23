@@ -84,11 +84,15 @@ def main() -> None:
         f.write(pdf_text)
     logger.info(f"PDF text saved to {pdf_text_path=}")
 
-    llm = FinancialLLM(str(data_dir / "examples.txt"))
-    response = llm.generate_text(pdf_text)
-    with open(str(data_dir / "transactions.json"), "w") as f:
-        json.dump(json.loads(response), f, indent=4)
-    logger.info(f"Transactions saved to {str(data_dir / 'transactions.json')=}")
+    transactions_path = str(data_dir / "transactions.json")
+    if os.path.exists(transactions_path):
+        logger.info(f"Transactions already exists in {transactions_path=}")
+    else:
+        llm = FinancialLLM(str(data_dir / "examples.txt"))
+        response = llm.generate_text(pdf_text)
+        with open(transactions_path, "w") as f:
+            json.dump(json.loads(response), f, indent=4)
+        logger.info(f"Transactions saved to {transactions_path=}")
 
 
 if __name__ == "__main__":

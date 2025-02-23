@@ -50,7 +50,8 @@ class PDFTextTableExtractor:
         stream_asset = self.pdf_services.get_content(result_asset)
         with open(f"{extract_dest}.zip", "wb") as file:
             file.write(stream_asset.get_input_stream())
-        shutil.rmtree(extract_dest)
+        if os.path.exists(extract_dest):
+            shutil.rmtree(extract_dest)
         with zipfile.ZipFile(f"{extract_dest}.zip", "r") as zip_ref:
             zip_ref.extractall(extract_dest)
         os.remove(f"{extract_dest}.zip")

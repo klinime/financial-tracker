@@ -184,20 +184,19 @@ class PDFTextBuilder:
         while df.shape[0] != len(df_rows):
             i = 0
             while i < df.shape[0]:
-                if (
-                    i == df.shape[0] - 1
-                    or not (df.iloc[i].isna() | df.iloc[i + 1].isna()).all()
-                ):
-                    df_rows.append(df.iloc[i])
-                else:
-                    concat_row = pd.Series(index=range(df.iloc[i].size), dtype=str)
-                    concat_row[~df.iloc[i].isna()] = df.iloc[i][~df.iloc[i].isna()]
-                    concat_row[~df.iloc[i + 1].isna()] = df.iloc[i + 1][
-                        ~df.iloc[i + 1].isna()
-                    ]
-                    df_rows.append(concat_row)
-                    i += 1
-                i += 1
+                is_not_na = df.iloc[i].notna()
+                j = i + 1
+                # merge adjacent rows where non-None entries are disjoint
+                while j < df.shape[0]:
+                    if (is_not_na & df.iloc[j].notna()).any():
+                        break
+                    is_not_na |= df.iloc[j].notna()
+                    j += 1
+                concat_row = pd.Series([None] * df.iloc[i].size, dtype=str)
+                for k in range(i, j):
+                    concat_row[df.iloc[k].notna()] = df.iloc[k][df.iloc[k].notna()]
+                df_rows.append(concat_row)
+                i = j
             if df.shape[0] != len(df_rows):
                 df = pd.DataFrame(df_rows)
                 df.reset_index(drop=True, inplace=True)
@@ -205,6 +204,7 @@ class PDFTextBuilder:
 
     def merge_split_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         # some columns are accidentally split into multiple columns at some offset
+        # while each row has None entries, pop them out to reduce the number of columns
         df_rows = []
         na_per_row = df.isna().sum(axis=1)
         while na_per_row.min() > 0:
@@ -228,7 +228,7 @@ class PDFTextBuilder:
         # append table as a string to self.pdf_text
         merged_header: list[str] = []
         try:
-            df = self.read_csv(os.path.join(self.extract_dir, file_path), merged_header)
+            df = self.read_csv(file_path, merged_header)
         except Exception:
             self.pdf_text += f"Raw table: {file_path}\n"
             return ""
@@ -243,6 +243,7 @@ class PDFTextBuilder:
         # extract plain text from table for matching with text blocks afterwards
         table_text += " ".join(df.stack().reset_index(drop=True)).strip()
 
+        df.columns = range(df.columns.size)
         df = self.merge_split_rows(df)
         df = self.merge_split_columns(df)
 

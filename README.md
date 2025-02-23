@@ -62,7 +62,7 @@ Example 1:
   {
     "Date of Transaction": "12/03",
     "Transaction Description": "transaction 3",
-    "Amount": "amount 3"
+    "Amount": "3.00"
   },
 ]
 
@@ -73,7 +73,6 @@ The third transaction is a ..., so we categorize it as "...".
 
 The extracted transactions are:
 {
-  "transaction_id": "1",
   "date": "2024-12-01",
   "amount": 1.00,
   "description": "transaction 1",
@@ -82,7 +81,6 @@ The extracted transactions are:
   "confidence": 0.79,
 },
 {
-  "transaction_id": "2",
   "date": "2024-12-02",
   "amount": 2.00,
   "description": "transaction 2",
@@ -91,7 +89,6 @@ The extracted transactions are:
   "confidence": 0.83,
 },
 {
-  "transaction_id": "3",
   "date": "2024-12-03",
   "amount": 3.00,
   "description": "transaction 3",

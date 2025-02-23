@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class FinancialTransaction(BaseModel):  # type: ignore
-    transaction_id: str = Field(..., description="Unique transaction identifier")
     date: str = Field(..., description="Transaction date in YYYY-MM-DD format")
     amount: float = Field(..., description="Transaction amount")
     description: str = Field(..., description="Cleaned transaction description")
@@ -23,7 +22,7 @@ class FinancialTransaction(BaseModel):  # type: ignore
         description="Confidence score of the primary and secondary categories",
     )
 
-    # @field_validator("primary_category")
+    # @field_validator("primary_category")  # type: ignore
     # def validate_category(cls, v: str) -> str:
     #     valid_primary = {
     #         "income",
@@ -31,12 +30,14 @@ class FinancialTransaction(BaseModel):  # type: ignore
     #         "tax",
     #         "saving",
     #         "investment",
+    #         "insurance",
     #         "housing",
     #         "utilities",
     #         "transportation",
     #         "food",
     #         "healthcare",
     #         "personal development",
+    #         "shopping",
     #         "entertainment",
     #     }
     #     if v not in valid_primary:
@@ -67,9 +68,8 @@ Follow these rules:
 
 1. Analyze documents with chain-of-thought reasoning:
    a. Identify all monetary transactions
-   b. Assign a unique transaction ID to each transaction
-   c. Identify the date, amount, and description of the transaction using surrounding context if necessary
-   d. Identify the primary and secondary categories of the transaction
+   b. Identify the date, amount, and description of the transaction using surrounding context if necessary
+   c. Identify the primary and secondary categories of the transaction from the description or surrounding context
 2. Extract the transactions from top to bottom, following the order of the transactions in the statements
 3. NEVER skip a transaction - I rather include an uncertain transaction than miss one
 4. DO NOT hallucinate transactions - each one must be grounded in the statements
@@ -80,12 +80,14 @@ Follow these rules:
    - tax
    - saving
    - investment
+   - insurance
    - housing
    - utilities
    - transportation
    - food
    - healthcare
    - personal development
+   - shopping
    - entertainment
 6. NEVER guess for primary categories - use confidence scores to express uncertainty
 7. Feel free to come up with new categories for secondary categories as needed but try to keep the number of unique secondary categories
@@ -104,7 +106,7 @@ Use the following to help guide your reasoning:
 - The relevant information for the transactions may not all be present in the json-like format, in that case
   deduce the information from the surrounding context.
 - Look for the "Parsed table" and "Raw table" strings to locate possibly relevant tables and context.
-- Use the <doc>, </doc> tags and <page>, </page> tags to locate the relevant information for the transactions.
+- Use the <doc> and <page> tags to locate the relevant information for the transactions.
   The information within these tags are from the same statement or page and could share relevant information, e.g. transaction dates.
 
 <examples>
