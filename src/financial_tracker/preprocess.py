@@ -181,45 +181,40 @@ class PDFTextBuilder:
     def merge_split_rows(self, df: pd.DataFrame) -> pd.DataFrame:
         # some rows are accidentally split into multiple rows with disjoint columns
         df_rows: list[pd.Series] = []
-        while df.shape[0] != len(df_rows):
-            i = 0
-            while i < df.shape[0]:
-                is_not_na = df.iloc[i].notna()
-                j = i + 1
-                # merge adjacent rows where non-None entries are disjoint
-                while j < df.shape[0]:
-                    if (is_not_na & df.iloc[j].notna()).any():
-                        break
-                    is_not_na |= df.iloc[j].notna()
-                    j += 1
-                concat_row = pd.Series([None] * df.iloc[i].size, dtype=str)
-                for k in range(i, j):
-                    concat_row[df.iloc[k].notna()] = df.iloc[k][df.iloc[k].notna()]
+        concat_row = df.iloc[0].copy()
+        row_not_na = df.iloc[0].notna()
+        for i in range(1, df.shape[0]):
+            # merge adjacent rows where non-None entries are disjoint
+            next_not_na = df.iloc[i].notna()
+            if (row_not_na & next_not_na).any():
                 df_rows.append(concat_row)
-                i = j
-            if df.shape[0] != len(df_rows):
-                df = pd.DataFrame(df_rows)
-                df.reset_index(drop=True, inplace=True)
+                concat_row = df.iloc[i].copy()
+                row_not_na = df.iloc[i].notna()
+            else:
+                concat_row[next_not_na] = df.iloc[i][next_not_na]
+                row_not_na |= next_not_na
+        df_rows.append(concat_row)
+        if df.shape[0] != len(df_rows):
+            df = pd.DataFrame(df_rows)
+            df.reset_index(drop=True, inplace=True)
         return df
 
     def merge_split_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         # some columns are accidentally split into multiple columns at some offset
-        # while each row has None entries, pop them out to reduce the number of columns
+        # pop until one of the rows has no None entries to reduce the number of columns
         df_rows = []
-        na_per_row = df.isna().sum(axis=1)
-        while na_per_row.min() > 0:
-            for row in df.itertuples(index=False):
-                row_list = list(row)
-                nan_index = row_list.index(None)
-                row_list.pop(nan_index)
-                df_rows.append(row_list)
-            df = pd.DataFrame(df_rows)
-            df_rows = []
-            na_per_row = df.isna().sum(axis=1)
+        na_to_pop = df.isna().sum(axis=1).min()
+        for row in df.itertuples(index=False):
+            row_list = list(row)
+            for _ in range(na_to_pop):
+                row_list.remove(None)
+            df_rows.append(row_list)
+        df = pd.DataFrame(df_rows)
         # for some reason, there are some columns that are all NaN except for one row
-        non_nan_per_col = df.iloc[1:].notna().sum(axis=0)
+        # try to pull them into the previous column until it is part of a normal column
+        not_na_per_col = df.iloc[1:].notna().sum(axis=0)
         for i in reversed(range(df.shape[1] - 1)):
-            if non_nan_per_col.iloc[i] == 1 and df.iloc[0, i + 1] is None:
+            if not_na_per_col.iloc[i] == 1 and df.iloc[0, i + 1] is None:
                 df.iloc[0, i + 1] = df.iloc[0, i]
                 df = df.drop(df.columns[i], axis=1)
         return df
