@@ -58,6 +58,9 @@ def parse_args() -> argparse.Namespace:
     parser_analyze.add_argument(*data_dir_args, **data_dir_kwargs)
     parser_analyze.add_argument(*examples_args, **examples_kwargs)
 
+    parser_correct = parser_sub.add_parser("correct", help="Correct transactions")
+    parser_correct.add_argument(*data_dir_args, **data_dir_kwargs)
+
     # parser_visualize = parser_sub.add_parser("visualize", help="Visualize statements")
     # parser_visualize.add_argument(*data_dir_args, **data_dir_kwargs)
 
@@ -175,6 +178,27 @@ def analyze_statements(data_dir: Path, examples_path: Path) -> None:
         logger.info(f"Transactions saved to {transactions_path=}")
 
 
+def correct_transactions(data_dir: Path) -> None:
+    logger = logging.getLogger(__name__)
+    categories = statement_categories()
+    transactions_paths = [
+        str(data_dir / f"{category}_transactions.json") for category in categories
+    ]
+
+    from financial_tracker.correction import TransactionCorrector
+
+    for transactions_path in transactions_paths:
+        if os.path.exists(transactions_path.replace(".json", "_corrected.json")):
+            logger.info(f"Transactions already corrected in {transactions_path=}")
+            continue
+        transaction_corrector = TransactionCorrector(transactions_path)
+        transactions = transaction_corrector.correct_transactions()
+        corrected_path = transactions_path.replace(".json", "_corrected.json")
+        with open(corrected_path, "w") as f:
+            json.dump(transactions, f, indent=4)
+        logger.info(f"Transactions saved to {corrected_path=}")
+
+
 # def visualize_statements(data_dir: Path) -> None:
 #     logger = logging.getLogger(__name__)
 #     categories = statement_categories()
@@ -188,9 +212,7 @@ def analyze_statements(data_dir: Path, examples_path: Path) -> None:
 
 #     from financial_tracker.visualize import TransactionVisualizer
 
-#     transactions = {}
-#     for transactions_path in transactions_paths:
-#         transactions.update(json.load(open(transactions_path))["transactions"])
+#     transactions = [json.load(open(transactions_path))["transactions"] for transactions_path in transactions_paths]
 #     transaction_visualizer = TransactionVisualizer(transactions)
 #     transaction_visualizer.build_app()
 #     transaction_visualizer.run()
@@ -211,6 +233,8 @@ def main() -> None:
         process_statements(data_dir)
     elif command == "analyze":
         analyze_statements(data_dir, args.examples_path)
+    elif command == "correct":
+        correct_transactions(data_dir)
     # elif command == "visualize":
     #     visualize_statements(data_dir)
     elif command == "e2e":
@@ -218,6 +242,7 @@ def main() -> None:
         extract_data(data_dir)
         process_statements(data_dir)
         analyze_statements(data_dir, args.examples_path)
+        correct_transactions(data_dir)
         # visualize_statements(data_dir)
 
 
