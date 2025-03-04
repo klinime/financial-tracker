@@ -23,9 +23,8 @@ PDF_SERVICES_CLIENT_ID=...
 PDF_SERVICES_CLIENT_SECRET=...
 ```
 
-Download the relevant statements and briefly categorize them
-(e.g. income, bank, expense) into subdirectories in a directory. An example
-of the directory structure is shown below:
+Download the relevant statements and categorize them into income, bank, expense
+categories to place in subdirectories, as shown below:
 
 ```console
 data/
@@ -103,7 +102,6 @@ Run the script with the following command:
 ```console
 python -m financial_tracker \
   --data-dir data \
-  --categories income bank expense \
   --examples-path data/examples.txt
 ```
 

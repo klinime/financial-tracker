@@ -1,6 +1,8 @@
 import os
 import shutil
+import time
 import zipfile
+from logging import getLogger
 
 from adobe.pdfservices.operation.auth.service_principal_credentials import (
     ServicePrincipalCredentials,
@@ -24,6 +26,7 @@ from adobe.pdfservices.operation.pdfjobs.result.extract_pdf_result import (
 
 class PDFTextTableExtractor:
     def __init__(self) -> None:
+        self.logger = getLogger(__name__)
         credentials = ServicePrincipalCredentials(
             client_id=os.getenv("PDF_SERVICES_CLIENT_ID"),
             client_secret=os.getenv("PDF_SERVICES_CLIENT_SECRET"),
@@ -31,6 +34,7 @@ class PDFTextTableExtractor:
         self.pdf_services = PDFServices(credentials=credentials)
 
     def extract_text_table(self, pdf_path: str, extract_dest: str) -> None:
+        self.logger.info(f"Extracting data from {pdf_path} with Adobe PDF Services...")
         input_stream = open(pdf_path, "rb").read()
         input_asset = self.pdf_services.upload(
             input_stream=input_stream, mime_type=PDFServicesMediaType.PDF
@@ -42,12 +46,14 @@ class PDFTextTableExtractor:
         extract_pdf_job = ExtractPDFJob(
             input_asset=input_asset, extract_pdf_params=extract_pdf_params
         )
+        start_time = time.time()
         location = self.pdf_services.submit(extract_pdf_job)
         pdf_services_response = self.pdf_services.get_job_result(
             location, ExtractPDFResult
         )
         result_asset = pdf_services_response.get_result().get_resource()
         stream_asset = self.pdf_services.get_content(result_asset)
+        end_time = time.time()
         with open(f"{extract_dest}.zip", "wb") as file:
             file.write(stream_asset.get_input_stream())
         if os.path.exists(extract_dest):
@@ -55,3 +61,4 @@ class PDFTextTableExtractor:
         with zipfile.ZipFile(f"{extract_dest}.zip", "r") as zip_ref:
             zip_ref.extractall(extract_dest)
         os.remove(f"{extract_dest}.zip")
+        self.logger.info(f"Time taken: {end_time - start_time:.2f} seconds")

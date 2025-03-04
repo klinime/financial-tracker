@@ -1,8 +1,11 @@
 import os
+import time
 from logging import getLogger
 
 from openai import OpenAI
 from pydantic import BaseModel, Field, field_validator
+
+from financial_tracker.categories import get_primary_categories
 
 
 class FinancialTransaction(BaseModel):  # type: ignore
@@ -24,23 +27,7 @@ class FinancialTransaction(BaseModel):  # type: ignore
 
     # @field_validator("primary_category")  # type: ignore
     # def validate_category(cls, v: str) -> str:
-    #     valid_primary = {
-    #         "income",
-    #         "deduction",
-    #         "tax",
-    #         "saving",
-    #         "investment",
-    #         "insurance",
-    #         "housing",
-    #         "utilities",
-    #         "transportation",
-    #         "food",
-    #         "healthcare",
-    #         "personal development",
-    #         "shopping",
-    #         "entertainment",
-    #     }
-    #     if v not in valid_primary:
+    #     if v not in primary_categories:
     #         raise ValueError(f"Invalid primary category: {v}")
     #     return v
 
@@ -71,29 +58,16 @@ Follow these rules:
    b. Identify the date, amount, and description of the transaction using surrounding context if necessary
    c. Identify the primary and secondary categories of the transaction from the description or surrounding context
 2. Extract the transactions from top to bottom, following the order of the transactions in the statements
-3. NEVER skip a transaction - I rather include an uncertain transaction than miss one
+3. NEVER skip a transaction - rather include an uncertain transaction than miss one
 4. DO NOT hallucinate transactions - each one must be grounded in the statements
-5. DO NOT hallucinate dates - set the date to "--" if you are absolutely cannot identify the date
-6. The list of available primary categories are:
-   - income
-   - deduction
-   - tax
-   - saving
-   - investment
-   - insurance
-   - housing
-   - utilities
-   - transportation
-   - food
-   - healthcare
-   - personal development
-   - shopping
-   - entertainment
+5. The list of available primary categories are: {primary_categories}
 6. NEVER guess for primary categories - use confidence scores to express uncertainty
 7. Feel free to come up with new categories for secondary categories as needed but try to keep the number of unique secondary categories
    per primary category to a minimum, 10 or less
 8. Confidence scores are between 0 and 1, where 0 is "this is a complete guess" and 1 is "this is absolutely certain".
 9. Ignore "YTD" or "Employer" information, as it is not relevant to the transactions. Look for "Current" or "Employee" instead.
+10. Ignore settlement transactions, as they are not relevant.
+11. Do not include duplicate transactions. Use the date, amount, and description to determine if a transaction is a duplicate.
 
 Use the following to help guide your reasoning:
 - The relevant information for each transaction is presented in json-like format as much as possible.
@@ -131,42 +105,48 @@ class FinancialLLM:
             default_headers={"OpenAI-Beta": "assistants=v2"},
         )
         with open(example_path) as f:
-            self.system_prompt = system_prompt.format(examples=f.read())
+            self.system_prompt = system_prompt.format(
+                primary_categories=get_primary_categories(),
+                examples=f.read(),
+            )
         self.user_prompt = user_prompt
 
-    def generate_text(self, statements: str) -> str:
+    def generate_text(self, statement_path: str) -> str:
+        model = "gpt-4o-2024-08-06"
+        self.logger.info(f"Analyzing {statement_path} with {model}...")
         try:
-            model = "gpt-4o-2024-08-06"
-            self.logger.info(f"Analyzing statements with {model}...")
+            start_time = time.time()
             response = self.client.beta.chat.completions.parse(
                 model=model,
                 messages=[
                     {"role": "system", "content": self.system_prompt},
                     {
                         "role": "user",
-                        "content": self.user_prompt.format(documents=statements),
+                        "content": self.user_prompt.format(
+                            documents=open(statement_path).read()
+                        ),
                     },
                 ],
                 response_format=TransactionResponse,
                 max_completion_tokens=8192,
                 temperature=0.2,
             )
-
-            cached_tokens = response.usage.prompt_tokens_details.cached_tokens
-            input_tokens = response.usage.prompt_tokens - cached_tokens
-            cached_cost = cached_tokens * 1.25 / 1_000_000
-            input_cost = input_tokens * 2.50 / 1_000_000
-            output_cost = response.usage.completion_tokens * 10.00 / 1_000_000
-
-            self.logger.info(f"Cached tokens: {cached_tokens}")
-            self.logger.info(f"Input tokens: {input_tokens}")
-            self.logger.info(f"Output tokens: {response.usage.completion_tokens}")
-            self.logger.info(
-                f"Cost: ${round(cached_cost + input_cost + output_cost, 6)}"
-            )
-            output = response.choices[0].message.content
-            assert isinstance(output, str)
-            return output
+            end_time = time.time()
         except Exception as e:
             self.logger.error(str(e))
             raise
+
+        cached_tokens = response.usage.prompt_tokens_details.cached_tokens
+        input_tokens = response.usage.prompt_tokens - cached_tokens
+        cached_cost = cached_tokens * 1.25 / 1_000_000
+        input_cost = input_tokens * 2.50 / 1_000_000
+        output_cost = response.usage.completion_tokens * 10.00 / 1_000_000
+
+        self.logger.info(f"Time taken: {(end_time - start_time):.2f} seconds")
+        self.logger.info(f"Cached tokens: {cached_tokens}")
+        self.logger.info(f"Input tokens: {input_tokens}")
+        self.logger.info(f"Output tokens: {response.usage.completion_tokens}")
+        self.logger.info(f"Cost: ${round(cached_cost + input_cost + output_cost, 6)}")
+        output = response.choices[0].message.content
+        assert isinstance(output, str)
+        return output
