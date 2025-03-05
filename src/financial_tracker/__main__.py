@@ -187,13 +187,13 @@ def correct_transactions(data_dir: Path) -> None:
 
     from financial_tracker.correction import TransactionCorrector
 
-    for transactions_path in transactions_paths:
-        if os.path.exists(transactions_path.replace(".json", "_corrected.json")):
+    for transactions_path, category in zip(transactions_paths, categories):
+        corrected_path = transactions_path.replace(".json", "_corrected.json")
+        if os.path.exists(corrected_path):
             logger.info(f"Transactions already corrected in {transactions_path=}")
             continue
-        transaction_corrector = TransactionCorrector(transactions_path)
+        transaction_corrector = TransactionCorrector(transactions_path, category)
         transactions = transaction_corrector.correct_transactions()
-        corrected_path = transactions_path.replace(".json", "_corrected.json")
         with open(corrected_path, "w") as f:
             json.dump(transactions, f, indent=4)
         logger.info(f"Transactions saved to {corrected_path=}")
