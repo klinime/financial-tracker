@@ -28,6 +28,8 @@ dependencies = [
   "openai>=1.30.0",
   "pydantic",
   "python-dotenv",
+  "dash",
+  "plotly",
 ]
 
 [project.optional-dependencies]
