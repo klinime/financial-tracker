@@ -1,3 +1,4 @@
+import colorsys
 from typing import Any
 
 import dash
@@ -20,6 +21,9 @@ class TransactionVisualizer:
             "primary_category",
             "secondary_category",
         ]
+        self.top_level_categories = list(
+            dict.fromkeys(get_top_level_categories().values())
+        )
         self.transactions = (
             pd.concat(
                 [self.inflow, self.outflow.assign(amount=-self.outflow["amount"])]
@@ -28,7 +32,7 @@ class TransactionVisualizer:
                 self.category_path,
                 key=lambda x: pd.Categorical(
                     x,
-                    categories=list(dict.fromkeys(get_top_level_categories().values())),
+                    categories=self.top_level_categories,
                     ordered=True,
                 ),
                 kind="stable",
@@ -112,7 +116,7 @@ class TransactionVisualizer:
                         ),
                         self.create_data_table(),
                     ],
-                    style={"margin": "20px 0"},
+                    style={"marginLeft": "auto", "marginRight": "auto", "width": "70%"},
                 ),
                 dash.html.Div(
                     [
@@ -146,9 +150,8 @@ class TransactionVisualizer:
                     category = self.category_path[toggle_row["level"]]
                     self.hierarchical_data.loc[
                         self.hierarchical_data[category] == toggle_row[category],
-                        "display",
+                        ["is_expanded", "display"],
                     ] = False
-                    self.hierarchical_data.loc[row_id, "is_expanded"] = False
                     self.hierarchical_data.loc[row_id, "display"] = True
                 else:
                     self.hierarchical_data.loc[
@@ -159,15 +162,18 @@ class TransactionVisualizer:
             visible_data: list[dict[str, Any]] = self.hierarchical_data[
                 self.hierarchical_data["display"]
             ].to_dict("records")
-            for row in visible_data:
+            for row in visible_data[:-1]:
                 if row["level"] < len(self.category_path):
                     # category rows, add expansion icon
                     icon = "▼" if row["is_expanded"] else "▶"
                     display_text = row[self.category_path[row["level"]]]
                     row["category_display"] = f"{icon} {display_text}"
                 else:
-                    # transaction rows, use description
-                    row["category_display"] = row["description"]
+                    # transaction rows, use date and description
+                    row["category_display"] = (
+                        f'{row["date"].strftime("%Y-%m-%d")} {row["description"]}'
+                    )
+            visible_data[-1]["category_display"] = "total"
             return visible_data
 
         @self.app.callback(
@@ -233,9 +239,46 @@ class TransactionVisualizer:
 
             return get_visible_data(clicked_row)
 
+        @self.app.callback(
+            dash.Output("transaction-table", "data", allow_duplicate=True),
+            [dash.Input("transaction-table", "sort_by")],
+            [dash.State("transaction-table", "data")],
+            prevent_initial_call=True,
+        )  # type: ignore
+        def sort_table(
+            sort_by: list[dict[str, str]], data: list[dict[str, Any]]
+        ) -> list[dict[str, Any]]:
+            if not sort_by:
+                return data
+
+            df = pd.DataFrame(data)
+            # find contiguous transaction blocks
+            is_transaction = df["level"] == len(self.category_path)
+            block_starts = is_transaction & ~is_transaction.shift(1).astype(bool)
+            start_indices = block_starts[block_starts].index
+            block_ends = is_transaction & ~is_transaction.shift(-1).astype(bool)
+            end_indices = block_ends[block_ends].index
+
+            # sort each transaction block
+            for start, end in zip(start_indices, end_indices):
+                block = df.iloc[start : end + 1]
+                # apply all sort conditions
+                for sort_item in sort_by:
+                    column_id = sort_item["column_id"]
+                    is_ascending = sort_item["direction"] == "asc"
+                    if column_id == "amount" or column_id == "percent_total":
+                        block = block.sort_values(
+                            column_id, ascending=is_ascending, key=abs
+                        )
+                    else:
+                        block = block.sort_values(column_id, ascending=is_ascending)
+                # replace original block with sorted block
+                df.iloc[start : end + 1] = block.values
+            table: list[dict[str, Any]] = df.to_dict("records")
+            return table
+
     def create_hierarchical_data(self) -> pd.DataFrame:
         df = self.filtered_transactions.copy()
-        df["date"] = df["date"].dt.strftime("%Y-%m-%d")
 
         fields = ["date", "description"]
         values = ["amount", "percent_in/outflow", "percent_total"]
@@ -262,11 +305,20 @@ class TransactionVisualizer:
             row["display"] = len(path) == 1
             rows.append(row)
 
+            # sort by positive/negative amount then by absolute amount
             if len(path) < len(self.category_path):
-                for c, g in group.groupby(self.category_path[len(path)]):
+                sorted_group = sorted(
+                    group.groupby(self.category_path[len(path)], sort=False),
+                    key=lambda x: (x[1]["amount"].sum() > 0, abs(x[1]["amount"].sum())),
+                    reverse=True,
+                )
+                for c, g in sorted_group:
                     dfs(rows, c, g, path)
             else:
                 # populate individual transactions
+                group = group.sort_values(
+                    "amount", key=abs, ascending=False
+                ).sort_values("amount", key=lambda x: x > 0, ascending=False)
                 for row in group.to_dict("records"):
                     row["id"] = (
                         f"trans_{hash(str(row["date"]) + row["description"] + str(row["amount"]))}"
@@ -279,9 +331,30 @@ class TransactionVisualizer:
 
         rows: list[dict[str, Any]] = []
         path: list[str] = []
-        for cat, group in df.groupby("top_level_category"):
+        sorted_groups = sorted(
+            df.groupby("top_level_category", sort=False),
+            key=lambda x: self.top_level_categories.index(x[0]),
+        )
+        for cat, group in sorted_groups:
             dfs(rows, cat, group, path)
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+        total_row = {
+            "id": "total",
+            "parent": "",
+            "top_level_category": "total",
+            "primary_category": "",
+            "secondary_category": "",
+            "amount": df[df["level"] == 0]["amount"].sum(),
+            "percent_in/outflow": 1.0,
+            "percent_total": 1.0,
+            "level": 0,
+            "is_expanded": False,
+            "display": True,
+        }
+        for field in fields:
+            total_row[field] = ""
+        df = pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+        return df
 
     def create_data_table(self) -> dash.dash_table.DataTable:
         columns = [
@@ -291,18 +364,13 @@ class TransactionVisualizer:
                 "type": "text",
             },
             {
-                "name": "Date",
-                "id": "date",
-                "type": "text",
-            },
-            {
                 "name": "Amount",
                 "id": "amount",
                 "type": "numeric",
                 "format": {"specifier": "$,.2f"},
             },
             {
-                "name": r"%inflow/outflow",
+                "name": r"%inflow or %outflow",
                 "id": "percent_in/outflow",
                 "type": "numeric",
                 "format": {"specifier": ".2%"},
@@ -316,19 +384,63 @@ class TransactionVisualizer:
         ]
 
         style_data_conditional = [
-            {"if": {"column_id": "category_display"}, "cursor": "pointer"}
+            {
+                "if": {"column_id": "category_display"},
+                "cursor": "pointer",
+                "width": "70%",
+            },
+            {
+                "if": {"column_id": "amount"},
+                "width": "10%",
+            },
+            {
+                "if": {"column_id": "percent_in/outflow"},
+                "width": "10%",
+            },
+            {
+                "if": {"column_id": "percent_total"},
+                "width": "10%",
+            },
         ]
         # level-based indentation
-        for level in range(len(self.category_path) + 1):
+        for level, color in enumerate(
+            self.color_gradient("#ADD8E6", len(self.category_path))
+        ):
+            style_data_conditional.append(
+                {
+                    "if": {"filter_query": f"{{level}} eq {level}"},
+                    "backgroundColor": color,
+                    "fontWeight": "bold",
+                }
+            )
+            style_data_conditional.append(
+                {
+                    "if": {
+                        "state": "selected",
+                        "filter_query": f"{{level}} eq {level}",
+                    },
+                    "backgroundColor": color,
+                    "border": "1px solid rgb(211, 211, 211)",
+                }
+            )
             style_data_conditional.append(
                 {
                     "if": {
                         "column_id": "category_display",
                         "filter_query": f"{{level}} eq {level}",
                     },
-                    "paddingLeft": str(level * 20) + "px",
+                    "paddingLeft": str(level * 20 + 10) + "px",
                 }
             )
+        style_data_conditional.append(
+            {
+                "if": {
+                    "column_id": "category_display",
+                    "filter_query": f"{{level}} eq {len(self.category_path)}",
+                },
+                "paddingLeft": str(len(self.category_path) * 20 + 10) + "px",
+            }
+        )
 
         return dash.dash_table.DataTable(
             id="transaction-table",
@@ -341,21 +453,37 @@ class TransactionVisualizer:
                 "padding": "5px",
                 "whiteSpace": "normal",
                 "height": "auto",
+                "maxWidth": 0,
             },
             style_data_conditional=style_data_conditional,
             style_header={
                 "backgroundColor": "rgb(230, 230, 230)",
                 "fontWeight": "bold",
             },
-            sort_action="native",
+            sort_action="custom",
             sort_mode="multi",
+            sort_by=[],  # populated by callback
             style_table={
                 "overflowX": "auto",
                 "overflowY": "auto",
                 "height": "500px",
+                "width": "100%",
             },
             css=[{"selector": ".dash-spreadsheet", "rule": "width: 100%;"}],
         )
+
+    def color_gradient(self, base_color: str, num_levels: int) -> list[str]:
+        rgb = tuple(int(base_color.lstrip("#")[i : i + 2], 16) / 255 for i in (0, 2, 4))
+        h, l, s = colorsys.rgb_to_hls(*rgb)
+        colors = []
+        for i in range(num_levels):
+            new_l = l + ((1 - l) * (i / num_levels))
+            rgb = colorsys.hls_to_rgb(h, new_l, s)
+            hex_color = "#{:02x}{:02x}{:02x}".format(
+                int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)
+            )
+            colors.append(hex_color)
+        return colors
 
     def create_treemap_plot(
         self, inflow: pd.DataFrame, outflow: pd.DataFrame
@@ -421,11 +549,7 @@ class TransactionVisualizer:
                 "top_level_category",
                 key=lambda x: pd.Categorical(
                     x,
-                    categories=[
-                        "witholding",
-                        "necessary expense",
-                        "discretionary expense",
-                    ],
+                    categories=self.top_level_categories,
                     ordered=True,
                 ),
             )
