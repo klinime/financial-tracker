@@ -6,6 +6,7 @@ from logging import getLogger
 from typing import Any
 
 import dash
+import dash_ag_grid as dag
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -175,11 +176,13 @@ class TransactionVisualizer:
                     # category rows, add expansion icon
                     icon = "▼" if row["is_expanded"] else "▶"
                     display_text = row[self.category_path[row["level"]]]
-                    row["category_display"] = f"{icon} {display_text}"
+                    row["category_display"] = (
+                        f"{' ' * (row['level'] * 4)}{icon} {display_text}"
+                    )
                 else:
                     # transaction rows, use date and description
                     row["category_display"] = (
-                        f'{row["date"].strftime("%Y-%m-%d")} {row["description"]}'
+                        f'{' ' * (row['level'] * 4)}{row["date"].strftime("%Y-%m-%d")} {row["description"]}'
                     )
             visible_data[-1]["category_display"] = "total"
             return visible_data
@@ -215,7 +218,7 @@ class TransactionVisualizer:
 
         @self.app.callback(
             [
-                dash.Output("transaction-table", "data"),
+                dash.Output("transaction-table", "rowData"),
                 dash.Output("treemap-plot", "figure"),
                 dash.Output("running-total-plot", "figure"),
             ],
@@ -252,70 +255,65 @@ class TransactionVisualizer:
                 y=self.filtered_transactions.sort_values("date")["amount"].cumsum(),
                 title="Cumulative Trend",
             )
-
             return visible_data, treemap, line_plot
 
         @self.app.callback(
-            dash.Output("transaction-table", "data", allow_duplicate=True),
-            [dash.Input("transaction-table", "active_cell")],
-            [dash.State("transaction-table", "data")],
+            dash.Output("transaction-table", "rowData", allow_duplicate=True),
+            [dash.Input("transaction-table", "cellClicked")],
+            [dash.State("transaction-table", "rowData")],
             prevent_initial_call=True,
         )  # type: ignore
         @callback_telemetry
         def expand_collapse_row(
-            active_cell: dict[str, Any], current_data: list[dict[str, Any]]
+            cell_clicked: dict[str, Any], data: list[dict[str, Any]]
         ) -> list[dict[str, Any]] | Any:
-            if not active_cell:
+            if not cell_clicked:
                 return dash.no_update
-            if active_cell["column_id"] != "category_display":
+            if cell_clicked["colId"] != "category_display":
                 return dash.no_update
-            row_idx = active_cell["row"]
-            if row_idx >= len(current_data):
-                return dash.no_update
-            clicked_row = current_data[row_idx]
+            clicked_row = data[cell_clicked["rowIndex"]]
             if clicked_row["level"] == len(self.category_path):
                 return dash.no_update
-
             return get_visible_data(clicked_row)
 
-        @self.app.callback(
-            dash.Output("transaction-table", "data", allow_duplicate=True),
-            [dash.Input("transaction-table", "sort_by")],
-            [dash.State("transaction-table", "data")],
-            prevent_initial_call=True,
-        )  # type: ignore
-        @callback_telemetry
-        def sort_table(
-            sort_by: list[dict[str, str]], data: list[dict[str, Any]]
-        ) -> list[dict[str, Any]]:
-            if not sort_by:
-                return data
+        # @self.app.callback(
+        #     dash.Output("transaction-table", "rowData", allow_duplicate=True),
+        #     [dash.Input("transaction-table", "sortApi")],
+        #     [dash.State("transaction-table", "rowData")],
+        #     prevent_initial_call=True,
+        # )  # type: ignore
+        # @callback_telemetry
+        # def sort_table(
+        #     sort_by: list[dict[str, str]], data: list[dict[str, Any]]
+        # ) -> list[dict[str, Any]]:
+        #     if not sort_by:
+        #         return data
 
-            df = pd.DataFrame(data)
-            # find contiguous transaction blocks
-            is_transaction = df["level"] == len(self.category_path)
-            block_starts = is_transaction & ~is_transaction.shift(1).astype(bool)
-            start_indices = block_starts[block_starts].index
-            block_ends = is_transaction & ~is_transaction.shift(-1).astype(bool)
-            end_indices = block_ends[block_ends].index
+        #     df = pd.DataFrame(data)
+        #     # find contiguous transaction blocks
+        #     is_transaction = df["level"] == len(self.category_path)
+        #     block_starts = is_transaction & ~is_transaction.shift(1).astype(bool)
+        #     start_indices = block_starts[block_starts].index
+        #     block_ends = is_transaction & ~is_transaction.shift(-1).astype(bool)
+        #     end_indices = block_ends[block_ends].index
 
-            # sort each transaction block
-            for start, end in zip(start_indices, end_indices):
-                block = df.iloc[start : end + 1]
-                # apply all sort conditions
-                for sort_item in sort_by:
-                    column_id = sort_item["column_id"]
-                    is_ascending = sort_item["direction"] == "asc"
-                    if column_id == "amount" or column_id == "percent_total":
-                        block = block.sort_values(
-                            column_id, ascending=is_ascending, key=abs
-                        )
-                    else:
-                        block = block.sort_values(column_id, ascending=is_ascending)
-                # replace original block with sorted block
-                df.iloc[start : end + 1] = block.values
-            table: list[dict[str, Any]] = df.to_dict("records")
-            return table
+        #     # sort each transaction block
+        #     for start, end in zip(start_indices, end_indices):
+        #         block = df.iloc[start : end + 1]
+        #         # apply all sort conditions
+        #         for sort_item in sort_by:
+        #             column_id = sort_item["column_id"]
+        #             is_ascending = sort_item["direction"] == "asc"
+        #             if column_id == "amount" or column_id == "percent_total":
+        #                 block = block.sort_values(
+        #                     column_id, ascending=is_ascending, key=abs
+        #                 )
+        #             else:
+        #                 block = block.sort_values(column_id, ascending=is_ascending)
+        #         # replace original block with sorted block
+        #         df.iloc[start : end + 1] = block.values
+        #     table: list[dict[str, Any]] = df.to_dict("records")
+        #     return table
 
     def create_hierarchical_data(self) -> pd.DataFrame:
         df = self.filtered_transactions.copy()
@@ -406,123 +404,85 @@ class TransactionVisualizer:
         df = pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
         return df
 
-    def create_data_table(self) -> dash.dash_table.DataTable:
-        columns = [
+    def create_data_table(self) -> dag.AgGrid:
+        column_defs = [
             {
-                "name": "Category",
-                "id": "category_display",
-                "type": "text",
-            },
-            {
-                "name": "Amount",
-                "id": "amount",
-                "type": "numeric",
-                "format": {"specifier": "$,.2f"},
-            },
-            {
-                "name": r"%inflow or %outflow",
-                "id": "percent_in/outflow",
-                "type": "numeric",
-                "format": {"specifier": ".2%"},
-            },
-            {
-                "name": r"%total",
-                "id": "percent_total",
-                "type": "numeric",
-                "format": {"specifier": ".2%"},
-            },
-        ]
-
-        style_data_conditional = [
-            {
-                "if": {
-                    "column_id": "category_display",
-                    "filter_query": "{id} ne 'total'",
+                "field": "category_display",
+                "headerName": "Category",
+                "sortable": True,
+                "flex": 7,
+                "cellStyle": {
+                    "styleConditions": [
+                        {
+                            "condition": f"params.data.level === {level}",
+                            "style": {
+                                "paddingLeft": f"{level * 20 + 10}px",
+                                "cursor": "pointer",
+                            },
+                        }
+                        for level in range(len(self.category_path) + 1)
+                    ]
                 },
-                "cursor": "pointer",
-                "width": "70%",
             },
             {
-                "if": {"column_id": "amount"},
-                "width": "10%",
+                "field": "amount",
+                "headerName": "Amount",
+                "sortable": True,
+                "type": "numericColumn",
+                "valueFormatter": {"function": "d3.format('$,.2f')(params.value)"},
+                "flex": 1,
             },
             {
-                "if": {"column_id": "percent_in/outflow"},
-                "width": "10%",
+                "field": "percent_in/outflow",
+                "headerName": r"%inflow or %outflow",
+                "sortable": True,
+                "type": "numericColumn",
+                "valueFormatter": {"function": "d3.format('.2%')(params.value)"},
+                "flex": 1,
             },
             {
-                "if": {"column_id": "percent_total"},
-                "width": "10%",
+                "field": "percent_total",
+                "headerName": r"%total",
+                "sortable": True,
+                "type": "numericColumn",
+                "valueFormatter": {"function": "d3.format('.2%')(params.value)"},
+                "flex": 1,
             },
         ]
-        # level-based indentation
-        for level, color in enumerate(
-            self.color_gradient("#ADD8E6", len(self.category_path))
-        ):
-            style_data_conditional.append(
-                {
-                    "if": {"filter_query": f"{{level}} eq {level}"},
-                    "backgroundColor": color,
+        green_color_gradient = self.color_gradient("#9FE2BF", len(self.category_path))
+        red_color_gradient = self.color_gradient("#FAA0A0", len(self.category_path))
+        row_style_conditions = [
+            {
+                "condition": f"params.data.level === {level} && params.data.amount >= 0",
+                "style": {
+                    "backgroundColor": green_color_gradient[level],
                     "fontWeight": "bold",
-                }
-            )
-            style_data_conditional.append(
-                {
-                    "if": {
-                        "state": "selected",
-                        "filter_query": f"{{level}} eq {level}",
-                    },
-                    "backgroundColor": color,
-                    "border": "1px solid rgb(211, 211, 211)",
-                }
-            )
-            style_data_conditional.append(
-                {
-                    "if": {
-                        "column_id": "category_display",
-                        "filter_query": f"{{level}} eq {level}",
-                    },
-                    "paddingLeft": str(level * 20 + 10) + "px",
-                }
-            )
-        style_data_conditional.append(
-            {
-                "if": {
-                    "column_id": "category_display",
-                    "filter_query": f"{{level}} eq {len(self.category_path)}",
                 },
-                "paddingLeft": str(len(self.category_path) * 20 + 10) + "px",
             }
-        )
-
-        return dash.dash_table.DataTable(
+            for level in range(len(self.category_path))
+        ] + [
+            {
+                "condition": f"params.data.level === {level} && params.data.amount < 0",
+                "style": {
+                    "backgroundColor": red_color_gradient[level],
+                    "fontWeight": "bold",
+                },
+            }
+            for level in range(len(self.category_path))
+        ]
+        return dag.AgGrid(
             id="transaction-table",
-            columns=columns,
-            data=[],  # populated by callback
-            row_selectable=False,
-            selected_rows=[],
-            style_cell={
-                "textAlign": "left",
-                "padding": "5px",
-                "whiteSpace": "normal",
-                "height": "auto",
-                "maxWidth": 0,
+            columnDefs=column_defs,
+            rowData=[],  # populated by callback,
+            dashGridOptions={
+                "rowSelection": "single",
+                "suppressRowClickSelection": False,
+                "domLayout": "normal",
+                "suppressScrollOnNewData": True,
+                # "onSortChanged": {"function": "onSortChanged"},
+                "getRowStyle": {"styleConditions": row_style_conditions},
             },
-            style_data_conditional=style_data_conditional,
-            style_header={
-                "backgroundColor": "rgb(230, 230, 230)",
-                "fontWeight": "bold",
-            },
-            sort_action="custom",
-            sort_mode="multi",
-            sort_by=[],  # populated by callback
-            style_table={
-                "overflowX": "auto",
-                "overflowY": "auto",
-                "height": "500px",
-                "width": "100%",
-            },
-            css=[{"selector": ".dash-spreadsheet", "rule": "width: 100%;"}],
+            style={"height": "500px", "width": "100%"},
         )
 
     def color_gradient(self, base_color: str, num_levels: int) -> list[str]:
