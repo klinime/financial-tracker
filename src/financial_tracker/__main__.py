@@ -12,71 +12,7 @@ from financial_tracker.categories import statement_categories
 load_dotenv()
 
 
-class KwArgs(TypedDict, total=False):
-    """General kwargs for specifying argparse arguments."""
-
-    type: type
-    nargs: str | int
-    default: Any
-    required: bool
-    help: str
-
-
-def parse_args() -> argparse.Namespace:
-    data_dir_args = ["--data-dir"]
-    data_dir_kwargs: KwArgs = {
-        "type": str,
-        "default": "data",
-        "help": "Path to the data directory",
-    }
-    examples_args = ["--examples-path"]
-    examples_kwargs: KwArgs = {
-        "type": str,
-        "default": "data/examples.txt",
-        "help": "Path to the examples file",
-    }
-
-    parser = argparse.ArgumentParser()
-    parser_sub = parser.add_subparsers(
-        title="financial_tracker subcommands", dest="command"
-    )
-
-    parser_concat = parser_sub.add_parser("concat", help="Concatenate statements")
-    parser_concat.add_argument(*data_dir_args, **data_dir_kwargs)
-
-    parser_extract = parser_sub.add_parser(
-        "extract", help="Extract data from statements"
-    )
-    parser_extract.add_argument(*data_dir_args, **data_dir_kwargs)
-
-    parser_preprocess = parser_sub.add_parser(
-        "preprocess", help="Preprocess statements"
-    )
-    parser_preprocess.add_argument(*data_dir_args, **data_dir_kwargs)
-
-    parser_analyze = parser_sub.add_parser("analyze", help="Analyze statements")
-    parser_analyze.add_argument(*data_dir_args, **data_dir_kwargs)
-    parser_analyze.add_argument(*examples_args, **examples_kwargs)
-
-    parser_correct = parser_sub.add_parser("correct", help="Correct transactions")
-    parser_correct.add_argument(*data_dir_args, **data_dir_kwargs)
-
-    parser_e2e = parser_sub.add_parser("e2e", help="Run all stages")
-    parser_e2e.add_argument(*data_dir_args, **data_dir_kwargs)
-    parser_e2e.add_argument(*examples_args, **examples_kwargs)
-
-    parser_visualize = parser_sub.add_parser("visualize", help="Visualize statements")
-    parser_visualize.add_argument(
-        "--data-dir",
-        type=str,
-        nargs="+",
-        help="Path(s) to the data directory",
-    )
-
-    return parser.parse_args()
-
-
-def concat_statements(data_dir: Path) -> None:
+def concat_statements(data_dir: Path, **kwargs: Any) -> None:
     logger = logging.getLogger(__name__)
     categories = statement_categories()
     statements_paths = [
@@ -114,7 +50,7 @@ def concat_statements(data_dir: Path) -> None:
         logger.info(f"Metadata saved to {metadata_path=}")
 
 
-def extract_data(data_dir: Path) -> None:
+def extract_data(data_dir: Path, **kwargs: Any) -> None:
     logger = logging.getLogger(__name__)
     logging.getLogger("adobe.pdfservices").setLevel(logging.ERROR)
     categories = statement_categories()
@@ -134,7 +70,7 @@ def extract_data(data_dir: Path) -> None:
         logger.info(f"Extracted data saved to {extract_dir=}")
 
 
-def process_statements(data_dir: Path) -> None:
+def process_statements(data_dir: Path, **kwargs: Any) -> None:
     logger = logging.getLogger(__name__)
     categories = statement_categories()
     extract_dirs = [str(data_dir / f"{category}_extract") for category in categories]
@@ -160,7 +96,7 @@ def process_statements(data_dir: Path) -> None:
         logger.info(f"PDF text saved to {pdf_text_path=}")
 
 
-def analyze_statements(data_dir: Path, examples_path: Path) -> None:
+def analyze_statements(data_dir: Path, examples_path: Path, **kwargs: Any) -> None:
     logger = logging.getLogger(__name__)
     categories = statement_categories()
     pdf_text_paths = [
@@ -183,7 +119,7 @@ def analyze_statements(data_dir: Path, examples_path: Path) -> None:
         logger.info(f"Transactions saved to {transactions_path=}")
 
 
-def correct_transactions(data_dir: Path) -> None:
+def correct_transactions(data_dir: Path, **kwargs: Any) -> None:
     logger = logging.getLogger(__name__)
     categories = statement_categories()
     transactions_paths = [
@@ -204,7 +140,7 @@ def correct_transactions(data_dir: Path) -> None:
         logger.info(f"Transactions saved to {corrected_path=}")
 
 
-def visualize_statements(data_dirs: list[Path]) -> None:
+def visualize_statements(data_dirs: list[Path], **kwargs: Any) -> None:
     logger = logging.getLogger(__name__)
     categories = statement_categories()
     transactions_paths = [
@@ -234,32 +170,103 @@ def visualize_statements(data_dirs: list[Path]) -> None:
     transaction_visualizer.run()
 
 
+class KwArgs(TypedDict, total=False):
+    """General kwargs for specifying argparse arguments."""
+
+    type: type
+    nargs: str | int
+    default: Any
+    required: bool
+    help: str
+
+
+def stage_info() -> dict[str, dict[str, Any]]:
+    return {
+        "concat": {
+            "help": "Concatenate statements",
+            "action": concat_statements,
+        },
+        "extract": {
+            "help": "Extract data from statements",
+            "action": extract_data,
+        },
+        "preprocess": {
+            "help": "Preprocess statements",
+            "action": process_statements,
+        },
+        "analyze": {
+            "help": "Analyze statements",
+            "action": analyze_statements,
+        },
+        "correct": {
+            "help": "Correct transactions",
+            "action": correct_transactions,
+        },
+    }
+
+
+def parse_args() -> argparse.Namespace:
+    data_dir_args = ["--data-dir"]
+    data_dir_kwargs: KwArgs = {
+        "type": str,
+        "default": "data",
+        "help": "Path to the data directory",
+    }
+    data_dirs_args = ["--data-dirs"]
+    data_dirs_kwargs: KwArgs = {
+        "type": str,
+        "nargs": "+",
+        "help": "Path(s) to the data directory",
+    }
+    examples_args = ["--examples-path"]
+    examples_kwargs: KwArgs = {
+        "type": str,
+        "default": "data/examples.txt",
+        "help": "Path to the examples file",
+    }
+
+    parser = argparse.ArgumentParser()
+    parser_sub = parser.add_subparsers(
+        title="financial_tracker subcommands", dest="command"
+    )
+    for stage, info in stage_info().items():
+        parser_stage = parser_sub.add_parser(stage, help=info["help"])
+        parser_stage.add_argument(*data_dir_args, **data_dir_kwargs)
+        if stage == "analyze":
+            parser_stage.add_argument(*examples_args, **examples_kwargs)
+
+    parser_multistage = parser_sub.add_parser("multistage", help="Run multiple stages")
+    parser_multistage.add_argument(
+        "--stages",
+        type=str,
+        nargs="+",
+        choices=list(stage_info().keys()),
+        help="Stages to run",
+    )
+    parser_multistage.add_argument(*data_dirs_args, **data_dirs_kwargs)
+    parser_multistage.add_argument(*examples_args, **examples_kwargs)
+
+    parser_visualize = parser_sub.add_parser("visualize", help="Visualize statements")
+    parser_visualize.add_argument(*data_dirs_args, **data_dirs_kwargs)
+
+    return parser.parse_args()
+
+
 def main() -> None:
     args = parse_args()
     command = args.command
 
     if command == "visualize":
-        logging.basicConfig(level=logging.DEBUG)
-        visualize_statements([Path(data_dir) for data_dir in args.data_dir])
+        visualize_statements([Path(data_dir) for data_dir in args.data_dirs])
+    elif command == "multistage":
+        for stage in args.stages:
+            for data_dir in args.data_dirs:
+                stage_info()[stage]["action"](
+                    Path(data_dir), args.examples_path, args.data_dir
+                )
     else:
-        logging.basicConfig(level=logging.INFO)
         data_dir = Path(args.data_dir)
-        if command == "concat":
-            concat_statements(data_dir)
-        elif command == "extract":
-            extract_data(data_dir)
-        elif command == "preprocess":
-            process_statements(data_dir)
-        elif command == "analyze":
-            analyze_statements(data_dir, args.examples_path)
-        elif command == "correct":
-            correct_transactions(data_dir)
-        elif command == "e2e":
-            concat_statements(data_dir)
-            extract_data(data_dir)
-            process_statements(data_dir)
-            analyze_statements(data_dir, args.examples_path)
-            correct_transactions(data_dir)
+        stage_info()[command]["action"](data_dir, args.examples_path)
 
 
 if __name__ == "__main__":
