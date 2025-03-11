@@ -18,10 +18,21 @@ pip install -e .
 Create a `.env` file in the root directory with the following variables:
 
 ```console
-OPENAI_API_KEY=...
 PDF_SERVICES_CLIENT_ID=...
 PDF_SERVICES_CLIENT_SECRET=...
+OPENAI_API_KEY=...
 ```
+
+Refer to
+[Adobe PDF Services API](https://developer.adobe.com/document-services/docs/overview/pdf-services-api/gettingstarted/#python)
+and [OpenAI API Platform](https://openai.com/api/) for instructions to obtain
+the API keys.
+
+PDF services is used in the `extract` stage and OpenAI in the `analyze` stage
+(see more details below), where PDF services has a free monthly quota and
+OpenAI is pay as you go (cost is logged for each usage). It is recommended
+to validate the outputs from the previous stages before executing the above two
+to minimize unexpected quota usage or cost.
 
 Download the relevant statements and categorize them into income, bank, expense
 categories to place in subdirectories, as shown below:
@@ -106,19 +117,19 @@ python -m financial_tracker multistage \
   --examples-path data/examples.txt
 ```
 
-For each data directory, the script takes the statements as inputs and outputs
-the concatenated statements to `data/{category}_statements.pdf`,
-the metadata to `data/{category}_metadata.json`,
-the raw extracted data to `data/{category}_extract/`,
-the processed extracted text to `data/{category}_pdf_text.txt`,
-the extracted transactions to `data/{category}_transactions.json`,
-and the corrected transactions to `data/{category}_transactions_corrected.json`.
+For each data directory, the script takes the statements as inputs and outputs:
+
+- the concatenated statements to `data/{category}_statements.pdf`
+- the metadata to `data/{category}_metadata.json`
+- the raw extracted data to `data/{category}_extract/`
+- the processed extracted text to `data/{category}_pdf_text.txt`
+- the extracted transactions to `data/{category}_transactions.json`
+- the corrected transactions to `data/{category}_transactions_corrected.json`
 
 To visualize the transactions in interactive table and charts in a browser:
 
 ```console
-python -m financial_tracker visualize \
-  --data-dir data-01 data-02 data-03
+python -m financial_tracker visualize --data-dirs data-01 data-02 data-03
 ```
 
 which aggregates all transactions from the specified directories.
