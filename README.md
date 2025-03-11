@@ -100,12 +100,23 @@ The extracted transactions are:
 Run the script with the following command:
 
 ```console
-python -m financial_tracker \
+python -m financial_tracker e2e \
   --data-dir data \
   --examples-path data/examples.txt
 ```
 
 The script will concatenate the statements and save it to
-`data/statements.pdf`, the metadata to `data/metadata.json`, the extracted
-text from the statements to `data/pdf_text.txt`, and the extracted
-transactions to `data/transactions.json`.
+`data/{category}_statements.pdf`, the metadata to `data/{category}_metadata.json`,
+the extracted text from the statements to `data/{category}_pdf_text.txt`,
+the extracted transactions to `data/{category}_transactions.json`,
+and the corrected transactions to `data/{category}_transactions_corrected.json`.
+
+The following command can be called on multiple directories:
+
+```console
+python -m financial_tracker visualize \
+  --data-dir data-01 data-02 data-03
+```
+
+Interactive table and charts can be opened in a browser for visualization
+which aggregates all transactions from the specified directories.
