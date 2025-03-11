@@ -176,13 +176,11 @@ class TransactionVisualizer:
                     # category rows, add expansion icon
                     icon = "▼" if row["is_expanded"] else "▶"
                     display_text = row[self.category_path[row["level"]]]
-                    row["category_display"] = (
-                        f"{' ' * (row['level'] * 4)}{icon} {display_text}"
-                    )
+                    row["category_display"] = f"{icon} {display_text}"
                 else:
                     # transaction rows, use date and description
                     row["category_display"] = (
-                        f'{' ' * (row['level'] * 4)}{row["date"].strftime("%Y-%m-%d")} {row["description"]}'
+                        f'{row["date"].strftime("%Y-%m-%d")} {row["description"]}'
                     )
             visible_data[-1]["category_display"] = "total"
             return visible_data
@@ -271,6 +269,8 @@ class TransactionVisualizer:
                 return dash.no_update
             if cell_clicked["colId"] != "category_display":
                 return dash.no_update
+            if cell_clicked["value"] == "total":
+                return dash.no_update
             clicked_row = data[cell_clicked["rowIndex"]]
             if clicked_row["level"] == len(self.category_path):
                 return dash.no_update
@@ -278,16 +278,18 @@ class TransactionVisualizer:
 
         # @self.app.callback(
         #     dash.Output("transaction-table", "rowData", allow_duplicate=True),
-        #     [dash.Input("transaction-table", "sortApi")],
+        #     [dash.Input("transaction-table", "columnState")],
         #     [dash.State("transaction-table", "rowData")],
         #     prevent_initial_call=True,
         # )  # type: ignore
         # @callback_telemetry
         # def sort_table(
-        #     sort_by: list[dict[str, str]], data: list[dict[str, Any]]
+        #     column_state: list[dict[str, str]], data: list[dict[str, Any]]
         # ) -> list[dict[str, Any]]:
-        #     if not sort_by:
+        #     if not column_state:
         #         return data
+        #     if not any(state["sort"] for state in column_state):
+        #         return dash.no_update
 
         #     df = pd.DataFrame(data)
         #     # find contiguous transaction blocks
@@ -301,9 +303,9 @@ class TransactionVisualizer:
         #     for start, end in zip(start_indices, end_indices):
         #         block = df.iloc[start : end + 1]
         #         # apply all sort conditions
-        #         for sort_item in sort_by:
-        #             column_id = sort_item["column_id"]
-        #             is_ascending = sort_item["direction"] == "asc"
+        #         for state in column_state:
+        #             column_id = state["colId"]
+        #             is_ascending = state["sort"] == "asc"
         #             if column_id == "amount" or column_id == "percent_total":
         #                 block = block.sort_values(
         #                     column_id, ascending=is_ascending, key=abs
@@ -405,16 +407,20 @@ class TransactionVisualizer:
         return df
 
     def create_data_table(self) -> dag.AgGrid:
+        # common_defs = {
+        #     "sortable": True,
+        #     "comparator": {"function": "(a, b) => 0"},
+        # }
+        common_defs = {"sortable": False}
         column_defs = [
             {
                 "field": "category_display",
                 "headerName": "Category",
-                "sortable": True,
                 "flex": 7,
                 "cellStyle": {
                     "styleConditions": [
                         {
-                            "condition": f"params.data.level === {level}",
+                            "condition": f"params.data.level === {level} && params.value !== 'total'",
                             "style": {
                                 "paddingLeft": f"{level * 20 + 10}px",
                                 "cursor": "pointer",
@@ -423,30 +429,31 @@ class TransactionVisualizer:
                         for level in range(len(self.category_path) + 1)
                     ]
                 },
+                **common_defs,
             },
             {
                 "field": "amount",
                 "headerName": "Amount",
-                "sortable": True,
                 "type": "numericColumn",
                 "valueFormatter": {"function": "d3.format('$,.2f')(params.value)"},
                 "flex": 1,
+                **common_defs,
             },
             {
                 "field": "percent_in/outflow",
                 "headerName": r"%inflow or %outflow",
-                "sortable": True,
                 "type": "numericColumn",
                 "valueFormatter": {"function": "d3.format('.2%')(params.value)"},
                 "flex": 1,
+                **common_defs,
             },
             {
                 "field": "percent_total",
                 "headerName": r"%total",
-                "sortable": True,
                 "type": "numericColumn",
                 "valueFormatter": {"function": "d3.format('.2%')(params.value)"},
                 "flex": 1,
+                **common_defs,
             },
         ]
         green_color_gradient = self.color_gradient("#9FE2BF", len(self.category_path))
@@ -479,8 +486,8 @@ class TransactionVisualizer:
                 "suppressRowClickSelection": False,
                 "domLayout": "normal",
                 "suppressScrollOnNewData": True,
-                # "onSortChanged": {"function": "onSortChanged"},
                 "getRowStyle": {"styleConditions": row_style_conditions},
+                "animateRows": False,
             },
             style={"height": "500px", "width": "100%"},
         )
