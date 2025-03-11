@@ -1,4 +1,8 @@
 import colorsys
+import time
+from collections.abc import Callable
+from functools import wraps
+from logging import getLogger
 from typing import Any
 
 import dash
@@ -12,10 +16,8 @@ from financial_tracker.categories import get_top_level_categories
 
 
 class TransactionVisualizer:
-    def __init__(self, transactions: list[dict[str, Any]]) -> None:
-        self.inflow, self.outflow = self.split_inflow_outflow(
-            [self.process_transactions(pd.json_normalize(t)) for t in transactions]
-        )
+    def __init__(self, transactions: list[list[dict[str, Any]]]) -> None:
+        self.logger = getLogger(__name__)
         self.category_path = [
             "top_level_category",
             "primary_category",
@@ -23,6 +25,15 @@ class TransactionVisualizer:
         ]
         self.top_level_categories = list(
             dict.fromkeys(get_top_level_categories().values())
+        )
+        self.inflow, self.outflow = self.split_inflow_outflow(
+            [
+                [
+                    self.process_transactions(pd.json_normalize(t))
+                    for t in period_transactions
+                ]
+                for period_transactions in transactions
+            ]
         )
         self.transactions = (
             pd.concat(
@@ -39,9 +50,6 @@ class TransactionVisualizer:
             )
             .reset_index(drop=True)
         )
-        self.transactions["percent_total"] = (
-            self.transactions["amount"] / self.transactions["amount"].sum()
-        )
         self.filtered_transactions = self.transactions
         self.hierarchical_data = self.transactions
 
@@ -57,9 +65,13 @@ class TransactionVisualizer:
         return transactions
 
     def split_inflow_outflow(
-        self, transactions: list[pd.DataFrame]
+        self, transactions: list[list[pd.DataFrame]]
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        income_transactions = transactions[0]
+        income_df_list, bank_df_list, expense_df_list = zip(*transactions)
+        income_transactions = pd.concat(income_df_list).reset_index(drop=True)
+        bank_transactions = pd.concat(bank_df_list).reset_index(drop=True)
+        expense_transactions = pd.concat(expense_df_list).reset_index(drop=True)
+
         income = income_transactions[
             income_transactions["top_level_category"] == "income"
         ]
@@ -69,7 +81,6 @@ class TransactionVisualizer:
         negative_witholding = witholding[witholding["amount"] < 0].copy()
         witholding = witholding[witholding["amount"] >= 0]
 
-        bank_transactions = transactions[1]
         bank_income = bank_transactions[
             bank_transactions["top_level_category"] == "income"
         ]
@@ -77,7 +88,6 @@ class TransactionVisualizer:
             bank_transactions["top_level_category"] != "income"
         ]
 
-        expense_transactions = transactions[2]
         income = (
             pd.concat([income, negative_witholding, bank_income])
             .sort_values("date")
@@ -90,8 +100,6 @@ class TransactionVisualizer:
         )
         income["amount"] = income["amount"].abs()
         expense["amount"] = expense["amount"].abs()
-        income["percent_in/outflow"] = income["amount"] / income["amount"].sum()
-        expense["percent_in/outflow"] = expense["amount"] / expense["amount"].sum()
         return income, expense
 
     def build_app(self) -> None:
@@ -176,6 +184,35 @@ class TransactionVisualizer:
             visible_data[-1]["category_display"] = "total"
             return visible_data
 
+        def callback_telemetry(func: Callable[..., Any]) -> Callable[..., Any]:
+            @wraps(func)
+            def wrapper(*args: Any, **kwargs: Any) -> Any:
+                start_time = time.perf_counter()
+                func_name = f"{func.__name__}"
+                ctx = dash.callback_context
+                if not ctx.triggered:
+                    self.logger.debug(f"[{func_name}] initial call")
+                else:
+                    self.logger.debug(f"[{func_name}] triggered by:")
+                    for key, value in ctx.triggered[0].items():
+                        self.logger.debug(f"[{func_name}] {' ' * 4}{key}: {value}")
+                if ctx.inputs:
+                    self.logger.debug(f"[{func_name}] inputs:")
+                    for key, value in ctx.inputs.items():
+                        self.logger.debug(f"[{func_name}] {' ' * 4}{key}: {value}")
+
+                try:
+                    result = func(*args, **kwargs)
+                    end_time = time.perf_counter()
+                    execution_time = end_time - start_time
+                    self.logger.debug(f"[{func_name}] time: {execution_time:.4f}s")
+                    return result
+                except Exception as e:
+                    self.logger.exception(f"[{func_name}] error: {e}")
+                    raise
+
+            return wrapper
+
         @self.app.callback(
             [
                 dash.Output("transaction-table", "data"),
@@ -188,6 +225,7 @@ class TransactionVisualizer:
             ],
             prevent_initial_call=False,
         )  # type: ignore
+        @callback_telemetry
         def update_dashboard(
             start_date: str, end_date: str
         ) -> tuple[list[dict[str, Any]], go.Figure, go.Figure]:
@@ -223,6 +261,7 @@ class TransactionVisualizer:
             [dash.State("transaction-table", "data")],
             prevent_initial_call=True,
         )  # type: ignore
+        @callback_telemetry
         def expand_collapse_row(
             active_cell: dict[str, Any], current_data: list[dict[str, Any]]
         ) -> list[dict[str, Any]] | Any:
@@ -245,6 +284,7 @@ class TransactionVisualizer:
             [dash.State("transaction-table", "data")],
             prevent_initial_call=True,
         )  # type: ignore
+        @callback_telemetry
         def sort_table(
             sort_by: list[dict[str, str]], data: list[dict[str, Any]]
         ) -> list[dict[str, Any]]:
@@ -279,6 +319,16 @@ class TransactionVisualizer:
 
     def create_hierarchical_data(self) -> pd.DataFrame:
         df = self.filtered_transactions.copy()
+        inflow_idx = df["amount"] >= 0
+        inflow = df[inflow_idx]
+        outflow = df[~inflow_idx]
+        df.loc[inflow_idx, "percent_in/outflow"] = (
+            inflow["amount"] / inflow["amount"].sum()
+        )
+        df.loc[~inflow_idx, "percent_in/outflow"] = (
+            outflow["amount"] / outflow["amount"].sum()
+        )
+        df["percent_total"] = df["amount"] / df["amount"].sum()
 
         fields = ["date", "description"]
         values = ["amount", "percent_in/outflow", "percent_total"]
@@ -385,7 +435,10 @@ class TransactionVisualizer:
 
         style_data_conditional = [
             {
-                "if": {"column_id": "category_display"},
+                "if": {
+                    "column_id": "category_display",
+                    "filter_query": "{id} ne 'total'",
+                },
                 "cursor": "pointer",
                 "width": "70%",
             },

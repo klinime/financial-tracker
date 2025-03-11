@@ -61,12 +61,17 @@ def parse_args() -> argparse.Namespace:
     parser_correct = parser_sub.add_parser("correct", help="Correct transactions")
     parser_correct.add_argument(*data_dir_args, **data_dir_kwargs)
 
-    parser_visualize = parser_sub.add_parser("visualize", help="Visualize statements")
-    parser_visualize.add_argument(*data_dir_args, **data_dir_kwargs)
-
     parser_e2e = parser_sub.add_parser("e2e", help="Run all stages")
     parser_e2e.add_argument(*data_dir_args, **data_dir_kwargs)
     parser_e2e.add_argument(*examples_args, **examples_kwargs)
+
+    parser_visualize = parser_sub.add_parser("visualize", help="Visualize statements")
+    parser_visualize.add_argument(
+        "--data-dir",
+        type=str,
+        nargs="+",
+        help="Path(s) to the data directory",
+    )
 
     return parser.parse_args()
 
@@ -199,22 +204,30 @@ def correct_transactions(data_dir: Path) -> None:
         logger.info(f"Transactions saved to {corrected_path=}")
 
 
-def visualize_statements(data_dir: Path) -> None:
+def visualize_statements(data_dirs: list[Path]) -> None:
     logger = logging.getLogger(__name__)
     categories = statement_categories()
     transactions_paths = [
-        str(data_dir / f"{category}_transactions_corrected.json")
-        for category in categories
+        [
+            str(data_dir / f"{category}_transactions_corrected.json")
+            for category in categories
+        ]
+        for data_dir in data_dirs
     ]
 
-    if not all(os.path.exists(path) for path in transactions_paths):
+    if not all(
+        os.path.exists(path)
+        for transactions_path in transactions_paths
+        for path in transactions_path
+    ):
         logger.info(f"Transactions not found in {transactions_paths=}")
         return
 
     from financial_tracker.visualize import TransactionVisualizer
 
     transactions = [
-        json.load(open(transactions_path)) for transactions_path in transactions_paths
+        [json.load(open(path)) for path in transactions_path]
+        for transactions_path in transactions_paths
     ]
     transaction_visualizer = TransactionVisualizer(transactions)
     transaction_visualizer.build_app()
@@ -222,31 +235,31 @@ def visualize_statements(data_dir: Path) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-
     args = parse_args()
     command = args.command
-    data_dir = Path(args.data_dir)
 
-    if command == "concat":
-        concat_statements(data_dir)
-    elif command == "extract":
-        extract_data(data_dir)
-    elif command == "preprocess":
-        process_statements(data_dir)
-    elif command == "analyze":
-        analyze_statements(data_dir, args.examples_path)
-    elif command == "correct":
-        correct_transactions(data_dir)
-    elif command == "visualize":
-        visualize_statements(data_dir)
-    elif command == "e2e":
-        concat_statements(data_dir)
-        extract_data(data_dir)
-        process_statements(data_dir)
-        analyze_statements(data_dir, args.examples_path)
-        correct_transactions(data_dir)
-        visualize_statements(data_dir)
+    if command == "visualize":
+        logging.basicConfig(level=logging.DEBUG)
+        visualize_statements([Path(data_dir) for data_dir in args.data_dir])
+    else:
+        logging.basicConfig(level=logging.INFO)
+        data_dir = Path(args.data_dir)
+        if command == "concat":
+            concat_statements(data_dir)
+        elif command == "extract":
+            extract_data(data_dir)
+        elif command == "preprocess":
+            process_statements(data_dir)
+        elif command == "analyze":
+            analyze_statements(data_dir, args.examples_path)
+        elif command == "correct":
+            correct_transactions(data_dir)
+        elif command == "e2e":
+            concat_statements(data_dir)
+            extract_data(data_dir)
+            process_statements(data_dir)
+            analyze_statements(data_dir, args.examples_path)
+            correct_transactions(data_dir)
 
 
 if __name__ == "__main__":
