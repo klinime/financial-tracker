@@ -11,7 +11,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from dateutil.relativedelta import relativedelta  # type: ignore
-from plotly.subplots import make_subplots
 
 from financial_tracker.categories import get_top_level_categories
 
@@ -245,7 +244,7 @@ class TransactionVisualizer:
             filtered_outflow = self.outflow[
                 self.outflow["date"].isin(pd.date_range(start=start_date, end=end_date))
             ]
-            treemap = self.create_treemap_plot(filtered_inflow, filtered_outflow)
+            sankey_plot = self.create_sankey_plot(filtered_inflow, filtered_outflow)
 
             line_plot = px.line(
                 self.filtered_transactions.sort_values("date"),
@@ -253,7 +252,7 @@ class TransactionVisualizer:
                 y=self.filtered_transactions.sort_values("date")["amount"].cumsum(),
                 title="Cumulative Trend",
             )
-            return visible_data, treemap, line_plot
+            return visible_data, sankey_plot, line_plot
 
         @self.app.callback(
             dash.Output("transaction-table", "rowData", allow_duplicate=True),
@@ -505,170 +504,194 @@ class TransactionVisualizer:
             colors.append(hex_color)
         return colors
 
-    def create_treemap_plot(
+    def create_sankey_plot(
         self, inflow: pd.DataFrame, outflow: pd.DataFrame
     ) -> go.Figure:
-        display_kwargs = {
-            "values": "amount",
-            "color": "amount",
-        }
-        update_kwargs = {
-            "branchvalues": "total",
-            "hovertemplate": "<b>%{label}</b><br>Amount: $%{value}<br><extra></extra>",
-        }
-
-        income_fig = px.treemap(
-            inflow,
-            path=["primary_category", "secondary_category"],
-            title="Income Distribution",
-            **display_kwargs,
-        )
-        income_fig.update_traces(**update_kwargs)
-        income_trace = income_fig.data[0]
-        income_trace.marker.coloraxis = "coloraxis1"
-        income_trace.marker.showscale = True
+        inflow_categories = ["primary_category", "secondary_category"]
+        outflow_categories = [
+            "top_level_category",
+            "primary_category",
+            "secondary_category",
+        ]
 
         total_inflow = inflow["amount"].sum()
         total_outflow = outflow["amount"].sum()
-        if total_inflow > total_outflow:
-            surplus = pd.DataFrame(
-                {
-                    "date": [inflow["date"].max()],
-                    "amount": [total_inflow - total_outflow],
-                    "description": ["surplus"],
-                    "top_level_category": ["income"],
-                    "primary_category": ["income"],
-                    "secondary_category": ["surplus"],
-                }
-            )
-            outflow_with_surplus = pd.concat([outflow, surplus])
-            expense_fig = px.treemap(
-                outflow_with_surplus,
-                path=self.category_path,
-                **display_kwargs,
-            )
-            expense_fig.update_traces(**update_kwargs)
-            expense_trace = expense_fig.data[0]
-            expense_trace.marker.coloraxis = "coloraxis2"
-            expense_trace.marker.showscale = True
-
-            fig = make_subplots(
-                rows=2,
-                cols=1,
-                subplot_titles=[
-                    "Income Distribution",
-                    "Expense Distribution (with Surplus)",
-                ],
-                specs=[[{"type": "domain"}], [{"type": "domain"}]],
-                row_heights=[0.5, 0.5],
-            )
-            fig.add_trace(income_trace, row=1, col=1)
-            fig.add_trace(expense_trace, row=2, col=1)
-        else:
-            sorted_outflow = outflow.sort_values(
-                "top_level_category",
-                key=lambda x: pd.Categorical(
-                    x,
-                    categories=self.top_level_categories,
-                    ordered=True,
-                ),
-            )
-            cumsum = sorted_outflow["amount"].cumsum()
-            index = cumsum.searchsorted(total_inflow)
-            within_budget = sorted_outflow.iloc[:index]
-            over_budget = sorted_outflow.iloc[index:]
-            remaining_inflow = total_inflow - within_budget["amount"].sum()
-            remaining = pd.DataFrame(
-                {
-                    "date": [within_budget["date"].max()],
-                    "amount": [remaining_inflow],
-                    "description": ["remaining income"],
-                    "top_level_category": ["income"],
-                    "primary_category": ["income"],
-                    "secondary_category": ["remaining income"],
-                }
-            )
-            within_budget_with_remaining = pd.concat([within_budget, remaining])
-
-            within_budget_fig = px.treemap(
-                within_budget_with_remaining,
-                path=self.category_path,
-                **display_kwargs,
-            )
-            within_budget_fig.update_traces(**update_kwargs)
-            within_budget_trace = within_budget_fig.data[0]
-            within_budget_trace.marker.coloraxis = "coloraxis2"
-            within_budget_trace.marker.showscale = False
-            over_budget_fig = px.treemap(
-                over_budget,
-                path=self.category_path,
-                **display_kwargs,
-            )
-            over_budget_fig.update_traces(**update_kwargs)
-            over_budget_trace = over_budget_fig.data[0]
-            over_budget_trace.marker.coloraxis = "coloraxis2"
-            over_budget_trace.marker.showscale = True
-
-            fig = make_subplots(
-                rows=2,
-                cols=2,
-                subplot_titles=[
-                    "Income Distribution",
-                    "Expense Distribution (Within Income)",
-                    "Excess Expenses",
-                ],
-                specs=[
-                    [{"type": "domain", "colspan": 2}, None],
-                    [{"type": "domain"}, {"type": "domain"}],
-                ],
-                row_heights=[0.5, 0.5],
-                column_widths=[
-                    total_inflow / total_outflow,
-                    1 - total_inflow / total_outflow,
-                ],
-            )
-            fig.add_trace(income_trace, row=1, col=1)
-            fig.add_trace(within_budget_trace, row=2, col=1)
-            fig.add_trace(over_budget_trace, row=2, col=2)
-
-        inflow_aggr = inflow.groupby("secondary_category")["amount"].sum()
-        fig.update_layout(
-            coloraxis1=dict(
-                colorscale="Greens",
-                cmin=inflow_aggr.min(),
-                cmax=inflow_aggr.max(),
-                colorbar=dict(
-                    title="Amount",
-                    xanchor="left",
-                    x=1.1,
-                    yanchor="top",
-                    y=1,
-                    len=0.4,
-                ),
-            ),
+        net = total_inflow - total_outflow
+        nodes = {"total income": 0, "total expenses": 1}
+        percent_node = [1.0, total_outflow / total_inflow]
+        links = []
+        percent_link = []
+        thicknesses: list[dict[int, float]] = (
+            [{} for _ in range(len(inflow_categories))]
+            + [{0: total_inflow}, {1: total_outflow}]
+            + [{} for _ in range(len(outflow_categories))]
         )
-        outflow_aggr = (
-            (outflow_with_surplus if total_inflow > total_outflow else outflow)
-            .groupby("secondary_category")["amount"]
-            .sum()
+        blue = "#87CEFA"
+        green = "#9FE2BF"
+        red = "#FAA0A0"
+        colors = [blue, red]
+
+        offset = 2
+        node_id = offset
+        if net > 0:
+            nodes["surplus"] = node_id
+            percent_node.append(net / total_inflow)
+            links.append([0, 1, total_outflow])
+            links.append([0, node_id, net])
+            percent_link.append(total_outflow / total_inflow)
+            percent_link.append(net / total_inflow)
+            thicknesses[len(inflow_categories) + 1][node_id] = net
+            colors.append(green)
+            node_id += 1
+        elif net < 0:
+            nodes["deficit"] = node_id
+            percent_node.append(-net / total_inflow)
+            links.append([0, 1, total_inflow])
+            links.append([node_id, 1, -net])
+            percent_link.append(total_inflow / total_outflow)
+            percent_link.append(-net / total_outflow)
+            thicknesses[len(inflow_categories) - 1][node_id] = -net
+            colors.append(red)
+            node_id += 1
+
+        def populate_inflow_nodes(
+            group_name: str, group: pd.DataFrame, depth: int, target_depth: int
+        ) -> None:
+            nonlocal node_id
+            if depth == target_depth:
+                nodes[group_name] = node_id
+                sum_amount = group["amount"].sum()
+                percent_node.append(sum_amount / total_inflow)
+                thicknesses[len(inflow_categories) - depth][node_id] = sum_amount
+                colors.append(blue)
+                if depth == 1:
+                    links.append([node_id, 0, sum_amount])
+                    percent_link.append(sum_amount / total_inflow)
+                else:
+                    target_node = nodes[group[inflow_categories[depth - 2]].iloc[0]]
+                    links.append([node_id, target_node, sum_amount])
+                    percent_link.append(
+                        sum_amount / total_inflow / percent_node[target_node]
+                    )
+                node_id += 1
+                return
+            sorted_group = sorted(
+                group.groupby(inflow_categories[depth], sort=False),
+                key=lambda x: x[1]["amount"].sum(),
+                reverse=True,
+            )
+            for group_name, group in sorted_group:
+                populate_inflow_nodes(group_name, group, depth + 1, target_depth)
+
+        def populate_outflow_nodes(
+            group_name: str, group: pd.DataFrame, depth: int, target_depth: int
+        ) -> None:
+            nonlocal node_id
+            if depth == target_depth:
+                if group_name in nodes:
+                    nodes[f"{group_name} income"] = nodes.pop(group_name)
+                    group_name = f"{group_name} expense"
+                nodes[group_name] = node_id
+                sum_amount = group["amount"].sum()
+                percent_node.append(sum_amount / total_inflow)
+                thicknesses[len(inflow_categories) + offset + depth - 1][
+                    node_id
+                ] = sum_amount
+                colors.append(red)
+                if depth == 1:
+                    links.append([1, node_id, sum_amount])
+                    percent_link.append(sum_amount / total_outflow)
+                else:
+                    source_category = group[outflow_categories[depth - 2]].iloc[0]
+                    if source_category not in nodes:
+                        source_category = f"{source_category} expense"
+                    links.append([nodes[source_category], node_id, sum_amount])
+                    percent_link.append(
+                        sum_amount / total_inflow / percent_node[nodes[source_category]]
+                    )
+                node_id += 1
+                return
+            sorted_group = sorted(
+                group.groupby(outflow_categories[depth], sort=False),
+                key=lambda x: x[1]["amount"].sum(),
+                reverse=True,
+            )
+            for group_name, group in sorted_group:
+                populate_outflow_nodes(group_name, group, depth + 1, target_depth)
+
+        for i in range(len(inflow_categories)):
+            populate_inflow_nodes(inflow_categories[i], inflow, 0, i + 1)
+        for i in range(len(outflow_categories)):
+            populate_outflow_nodes(outflow_categories[i], outflow, 0, i + 1)
+
+        labels = [k for k, _ in sorted(nodes.items(), key=lambda x: x[1])]
+        x_positions, y_positions = self.calculate_node_positions(
+            thicknesses,
+            anchor_id=0 if net > 0 else 1,
+            anchor_cols=1,
         )
-        fig.update_layout(
-            coloraxis2=dict(
-                colorscale="Reds",
-                cmin=outflow_aggr.min(),
-                cmax=outflow_aggr.max(),
-                colorbar=dict(
-                    title="Amount",
-                    xanchor="left",
-                    x=1.1,
-                    yanchor="bottom",
-                    y=0,
-                    len=0.4,
+        source, target, value = zip(*links)
+        fig = go.Figure(
+            go.Sankey(
+                node=dict(
+                    label=labels,
+                    x=x_positions,
+                    y=y_positions,
+                    color=colors,
+                    customdata=percent_node,
+                    pad=15,
+                    thickness=20,
+                    line=dict(color="black", width=0.5),
+                    hovertemplate="$%{value:,.2f}<br>%{customdata:,.2%} of total income<extra></extra>",
                 ),
-            ),
+                link=dict(
+                    source=source,
+                    target=target,
+                    value=value,
+                    customdata=percent_link,
+                    hovertemplate="$%{value:,.2f}<extra>%{customdata:,.2%}</extra>",
+                ),
+            )
         )
         fig.update_layout(title="Financial Overview")
         return fig
+
+    def calculate_node_positions(
+        self,
+        column_thicknesses: list[dict[int, float]],
+        anchor_id: int = 0,
+        anchor_cols: int = 0,
+    ) -> tuple[list[float | None], list[float | None]]:
+        n_nodes = sum(len(col) for col in column_thicknesses)
+        if anchor_cols > 0:
+            column_thicknesses = column_thicknesses[:-anchor_cols]
+        x_positions = [0.0] * sum(len(col) for col in column_thicknesses)
+        y_positions = [0.5] * len(x_positions)
+        for col in column_thicknesses:
+            if anchor_id in col and len(col) == 1:
+                max_thickness = col[anchor_id]
+
+        base_spacing = 0.1
+        margin = 0.5
+        for idx, col in enumerate(column_thicknesses):
+            x_pos = idx / (len(column_thicknesses) + anchor_cols)
+            factor = abs(anchor_id - idx)
+            while True:
+                spacing = 0.0 if factor == 0 else base_spacing / factor
+                available_space = margin - spacing * (len(col) - 1)
+                if available_space > 0:
+                    break
+                factor += 1
+            y_pos = available_space / 2
+            for node_id, thickness in col.items():
+                half_width = thickness / max_thickness * (1.0 - margin) / 2
+                y_pos += half_width
+                x_positions[node_id] = x_pos
+                y_positions[node_id] = y_pos
+                y_pos += half_width + spacing
+
+        padding = [None] * (n_nodes - len(x_positions))
+        return x_positions + padding, y_positions + padding
 
     def run(self) -> None:
         self.app.run_server(debug=True)
