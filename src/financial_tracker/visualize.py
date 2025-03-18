@@ -534,7 +534,7 @@ class TransactionVisualizer:
             node_id += 1
 
         percent_node = [1.0] * len(nodes)
-        links = []
+        links: list[list[int | float]] = []
         percent_link = []
         thicknesses: list[dict[int, float]] = (
             [{} for _ in range(len(category_paths))]
@@ -558,6 +558,8 @@ class TransactionVisualizer:
         def populate_inflow_nodes(
             income_name: str, income_group: pd.DataFrame, depth: int, target_depth: int
         ) -> None:
+            # recursively group income by category_paths to maintain relative ordering
+            # between categories to maintain clean links in the sankey plot
             nonlocal node_id
             if depth == target_depth:
                 nodes[income_name] = node_id
@@ -623,36 +625,51 @@ class TransactionVisualizer:
             expense_group: pd.DataFrame,
             depth: int,
             target_depth: int,
-            leaf_expense_ids: list[int],
+            expense_ids: set[int],
         ) -> None:
+            # recursively group expense by category_paths similar to populate_inflow_nodes
             nonlocal node_id
             if depth == target_depth:
-                if depth == len(category_paths):
-                    leaf_expense_ids.append(node_id)
-                if expense_name in nodes:
+                # node can already exist if it is also a source of income
+                # rename the nodes because sankey plot doesn't support duplicate nodes
+                if expense_name in nodes and nodes[expense_name] not in expense_ids:
                     nodes[f"{expense_name} income"] = nodes.pop(expense_name)
                     expense_name = f"{expense_name} expense"
-                nodes[expense_name] = node_id
+                # node can also exist where multiple primary categories have non-null
+                # overlapping secondary categories - flow to the existing node
+                expense_id = nodes.get(expense_name, node_id)
+                if expense_id == node_id:
+                    nodes[expense_name] = node_id
+                    expense_ids.add(node_id)
+                    node_id += 1
                 sum_amount = expense_group["amount"].sum()
-                percent_node.append(sum_amount / total_inflow)
+                if len(percent_node) <= expense_id:
+                    percent_node.append(0)
+                percent_node[expense_id] += sum_amount / total_inflow
                 category = expense_group["top_level_category"].iloc[0]
-                thicknesses[
-                    len(category_paths)
+                level_idx = (
+                    -1
+                    if depth == len(category_paths)
+                    else len(category_paths)
                     + 1
                     + intermediary_expenses.index(category)
                     + depth
-                ][node_id] = sum_amount
-                colors.append(red)
+                )
+                thicknesses[level_idx][expense_id] = (
+                    thicknesses[level_idx].get(expense_id, 0) + sum_amount
+                )
+                if len(colors) <= expense_id:
+                    colors.append(red)
+
                 source_category = category
                 if depth > 1:
                     source_category = expense_group[category_paths[depth - 2]].iloc[0]
                     if source_category not in nodes:
                         source_category = f"{source_category} expense"
-                links.append([nodes[source_category], node_id, sum_amount])
+                links.append([nodes[source_category], expense_id, sum_amount])
                 percent_link.append(
                     sum_amount / total_inflow / percent_node[nodes[source_category]]
                 )
-                node_id += 1
                 return
 
             sorted_group = sorted(
@@ -666,24 +683,29 @@ class TransactionVisualizer:
                     expense_group,
                     depth + 1,
                     target_depth,
-                    leaf_expense_ids,
+                    expense_ids,
                 )
 
-        leaf_expense_ids: list[int] = []
         for i in range(len(category_paths)):
             populate_inflow_nodes(category_paths[i], inflow, 0, i + 1)
         populate_outflow_categories()
-        for i in range(len(category_paths)):
-            populate_outflow_nodes(
-                category_paths[i], outflow, 0, i + 1, leaf_expense_ids
-            )
+        # reverse sort because the first categories to branch out are at the bottom
+        sorted_outflow = sorted(
+            outflow.groupby("top_level_category", sort=False),
+            key=lambda x: self.top_level_categories.index(x[0]),
+            reverse=True,
+        )
+        expense_ids: set[int] = set()
+        for category, out in sorted_outflow:
+            for i in range(len(category_paths)):
+                populate_outflow_nodes(category, out, 0, i + 1, expense_ids)
 
         labels = [k for k, _ in sorted(nodes.items(), key=lambda x: x[1])]
         x_positions, y_positions = self.calculate_node_positions(
             thicknesses,
+            links,
             anchor_id=0,
             anchor_xpos=0.4,
-            leaf_expense_ids=leaf_expense_ids,
         )
         source, target, value = zip(*links)
         fig = go.Figure(
@@ -714,9 +736,9 @@ class TransactionVisualizer:
     def calculate_node_positions(
         self,
         column_thicknesses: list[dict[int, float]],
+        links: list[list[int | float]],
         anchor_id: int = 0,
         anchor_xpos: float = 0.5,
-        leaf_expense_ids: list[int] | None = None,
     ) -> tuple[list[float], list[float]]:
         x_positions = [0.0] * sum(len(col) for col in column_thicknesses)
         y_positions = [0.5] * len(x_positions)
@@ -731,9 +753,11 @@ class TransactionVisualizer:
             len(column_thicknesses) - anchor_col - 1
         )
 
-        base_spacing = 0.1
-        min_spacing = 0.02
-        band_width = 0.6
+        link_map: dict[int, list[int]] = {}
+        for source, target, _ in links:
+            assert isinstance(source, int)
+            assert isinstance(target, int)
+            link_map.setdefault(target, []).append(source)
         for idx, col in enumerate(column_thicknesses):
             x_pos = (
                 left_x_offset * idx
@@ -743,34 +767,79 @@ class TransactionVisualizer:
             for node_id in col.keys():
                 x_positions[node_id] = x_pos
 
-            num_min_spacing = (
-                sum(1 for node_id in col if node_id in leaf_expense_ids)
-                if leaf_expense_ids
-                else 0
-            )
-            num_std_spacing = len(col) - max(1, num_min_spacing)
-            factor = abs(anchor_id - idx)
-            spacing = 0.0 if factor == 0 else base_spacing / factor
-            margin = band_width * sum(col.values()) / max_thickness
-            while True:
-                available_space = 1.0 - (
-                    margin + min_spacing * num_min_spacing + spacing * num_std_spacing
+            # income nodes have more relaxed spacing requirements
+            if idx <= anchor_col:
+                self.calculate_y_positions(y_positions, col, max_thickness)
+                continue
+
+            # expense nodes have more strict spacing requirements
+            source_groups: dict[tuple[int, ...], list[int]] = {}
+            for node_id in col.keys():
+                sources = tuple(link_map[node_id])
+                source_groups.setdefault(sources, []).append(node_id)
+            for sources, nodes in source_groups.items():
+                self.calculate_y_positions(
+                    y_positions,
+                    {k: col[k] for k in nodes},
+                    max_thickness,
+                    idx - anchor_col,
+                    [y_positions[sources[0]], y_positions[sources[-1]]],
                 )
-                if available_space > 0:
-                    break
-                factor += 1
-                spacing = base_spacing / factor
-            y_pos = available_space / 2
-            for node_id, thickness in col.items():
-                half_width = thickness / max_thickness * band_width / 2
-                y_pos += half_width
-                y_positions[node_id] = y_pos
-                y_pos += half_width
-                if leaf_expense_ids and node_id in leaf_expense_ids:
-                    y_pos += min_spacing
-                else:
-                    y_pos += spacing
+
+        # last column has the most variance in spacing, so after the
+        # initial pass, the spacing is adjusted again to prevent overlap
+        min_y_pos = min(
+            y_positions[node_id] for node_id in column_thicknesses[-1].keys()
+        )
+        max_y_pos = max(
+            y_positions[node_id] for node_id in column_thicknesses[-1].keys()
+        )
+        self.calculate_y_positions(
+            y_positions,
+            column_thicknesses[-1],
+            max_thickness,
+            len(column_thicknesses) - 1,
+            [min_y_pos * 0.9, min(max_y_pos * 0.9, 0.9)],
+        )
         return x_positions, y_positions
+
+    def calculate_y_positions(
+        self,
+        y_positions: list[float],
+        col: dict[int, float],
+        max_thickness: float,
+        offset: int = 0,
+        prev_ypos: list[float] | None = None,
+    ) -> None:
+        base_spacing = 0.2
+        min_spacing = 0.02
+        spacing = (
+            max(base_spacing * 0.4 ** (offset - 1), min_spacing)
+            if offset > 0
+            else base_spacing
+        )
+        band_width = 0.5
+        factor = 1
+        band = band_width * sum(col.values()) / max_thickness
+        while True:
+            available_space = 1.0 - band - (len(col) - 1) * spacing / factor
+            if available_space > 0:
+                break
+            factor += 1
+
+        center = 0.5
+        if prev_ypos:
+            # next level can deviate from the center by 10% to accommodate
+            # downstream nodes which necessarily take up more space
+            center = (prev_ypos[0] + prev_ypos[-1]) / 2
+            center = center + (center - 0.5) * 0.1
+        y_pos = center - (1.0 - available_space) / 2
+        for node_id, thickness in col.items():
+            half_width = thickness / max_thickness * band_width / 2
+            y_pos += half_width
+            y_positions[node_id] = y_pos
+            y_pos += half_width
+            y_pos += spacing / factor
 
     def run(self) -> None:
         self.app.run_server(debug=True)
