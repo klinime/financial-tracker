@@ -333,7 +333,7 @@ class TransactionVisualizer:
         values = ["amount", "percent_in/outflow", "percent_total"]
 
         # populate subtotals for each category
-        def dfs(
+        def populate_subtotals(
             rows: list[dict[str, Any]], cat: str, group: pd.DataFrame, path: list[str]
         ) -> None:
             # all columns: [id, parent] + categories + fields + values + [level, is_expanded, display]
@@ -362,7 +362,7 @@ class TransactionVisualizer:
                     reverse=True,
                 )
                 for c, g in sorted_group:
-                    dfs(rows, c, g, path)
+                    populate_subtotals(rows, c, g, path)
             else:
                 # populate individual transactions
                 group = group.sort_values(
@@ -385,7 +385,7 @@ class TransactionVisualizer:
             key=lambda x: self.top_level_categories.index(x[0]),
         )
         for cat, group in sorted_groups:
-            dfs(rows, cat, group, path)
+            populate_subtotals(rows, cat, group, path)
         df = pd.DataFrame(rows)
         total_row = {
             "id": "total",
@@ -507,68 +507,69 @@ class TransactionVisualizer:
     def create_sankey_plot(
         self, inflow: pd.DataFrame, outflow: pd.DataFrame
     ) -> go.Figure:
-        inflow_categories = ["primary_category", "secondary_category"]
-        outflow_categories = [
-            "top_level_category",
-            "primary_category",
-            "secondary_category",
+        category_paths = ["primary_category", "secondary_category"]
+        intermediary_incomes = ["take home income", "discretionary income"]
+        intermediary_expenses = self.top_level_categories[1:]
+        assert intermediary_expenses == [
+            "witholding",
+            "necessary expense",
+            "discretionary expense",
         ]
-
         total_inflow = inflow["amount"].sum()
         total_outflow = outflow["amount"].sum()
         net = total_inflow - total_outflow
-        nodes = {"total income": 0, "total expenses": 1}
-        percent_node = [1.0, total_outflow / total_inflow]
+
+        node_id = 0
+        nodes = {"total income": node_id}
+        node_id += 1
+        if net > 0:
+            intermediary_incomes.append("surplus")
+        elif net < 0:
+            intermediary_incomes.append("deficit")
+        for income in intermediary_incomes:
+            nodes[income] = node_id
+            node_id += 1
+        for expense in intermediary_expenses:
+            nodes[expense] = node_id
+            node_id += 1
+
+        percent_node = [1.0] * len(nodes)
         links = []
         percent_link = []
         thicknesses: list[dict[int, float]] = (
-            [{} for _ in range(len(inflow_categories))]
-            + [{0: total_inflow}, {1: total_outflow}]
-            + [{} for _ in range(len(outflow_categories))]
+            [{} for _ in range(len(category_paths))]
+            + [{0: total_inflow}]
+            + [{} for _ in range(len(intermediary_expenses) + len(category_paths))]
         )
         blue = "#87CEFA"
         green = "#9FE2BF"
         red = "#FAA0A0"
-        colors = [blue, red]
-
-        offset = 2
-        node_id = offset
-        if net > 0:
-            nodes["surplus"] = node_id
-            percent_node.append(net / total_inflow)
-            links.append([0, 1, total_outflow])
-            links.append([0, node_id, net])
-            percent_link.append(total_outflow / total_inflow)
-            percent_link.append(net / total_inflow)
-            thicknesses[len(inflow_categories) + 1][node_id] = net
-            colors.append(green)
-            node_id += 1
-        elif net < 0:
-            nodes["deficit"] = node_id
-            percent_node.append(-net / total_inflow)
-            links.append([0, 1, total_inflow])
-            links.append([node_id, 1, -net])
-            percent_link.append(total_inflow / total_outflow)
-            percent_link.append(-net / total_outflow)
-            thicknesses[len(inflow_categories) - 1][node_id] = -net
-            colors.append(red)
-            node_id += 1
+        colors = (
+            [blue]
+            + [green] * len(intermediary_incomes)
+            + [red] * len(intermediary_expenses)
+        )
+        if net < 0:
+            colors[len(intermediary_incomes)] = red
+        # nodes are colors are fully initialized
+        # percent_node and thicknesses are partially initialized
+        # links and percent_link are not initialized
 
         def populate_inflow_nodes(
-            group_name: str, group: pd.DataFrame, depth: int, target_depth: int
+            income_name: str, income_group: pd.DataFrame, depth: int, target_depth: int
         ) -> None:
             nonlocal node_id
             if depth == target_depth:
-                nodes[group_name] = node_id
-                sum_amount = group["amount"].sum()
+                nodes[income_name] = node_id
+                sum_amount = income_group["amount"].sum()
                 percent_node.append(sum_amount / total_inflow)
-                thicknesses[len(inflow_categories) - depth][node_id] = sum_amount
+                thicknesses[len(category_paths) - depth][node_id] = sum_amount
                 colors.append(blue)
                 if depth == 1:
                     links.append([node_id, 0, sum_amount])
                     percent_link.append(sum_amount / total_inflow)
                 else:
-                    target_node = nodes[group[inflow_categories[depth - 2]].iloc[0]]
+                    target_node = nodes[income_group[category_paths[depth - 2]].iloc[0]]
                     links.append([node_id, target_node, sum_amount])
                     percent_link.append(
                         sum_amount / total_inflow / percent_node[target_node]
@@ -576,59 +577,113 @@ class TransactionVisualizer:
                 node_id += 1
                 return
             sorted_group = sorted(
-                group.groupby(inflow_categories[depth], sort=False),
+                income_group.groupby(category_paths[depth], sort=False),
                 key=lambda x: x[1]["amount"].sum(),
                 reverse=True,
             )
-            for group_name, group in sorted_group:
-                populate_inflow_nodes(group_name, group, depth + 1, target_depth)
+            for income_name, income_group in sorted_group:
+                populate_inflow_nodes(
+                    income_name, income_group, depth + 1, target_depth
+                )
+
+        def populate_outflow_categories() -> None:
+            remaining_income = total_inflow
+            for depth, expense_category in enumerate(intermediary_expenses):
+                sub_expense = outflow[outflow["top_level_category"] == expense_category]
+                subtotal = sub_expense["amount"].sum()
+                remaining_income -= subtotal
+
+                income_id = depth + 1
+                percent_node[income_id] = abs(remaining_income) / total_inflow
+                income_level = len(category_paths) + 1 + depth
+                if remaining_income > 0:
+                    # surplus branches from discretionary income
+                    thicknesses[income_level][income_id] = remaining_income
+                    links.append([income_id - 1, income_id, remaining_income])
+                    percent_link.append(
+                        remaining_income / total_inflow / percent_node[income_id - 1]
+                    )
+
+                expense_id = nodes[expense_category]
+                percent_node[expense_id] = subtotal / total_inflow
+                thicknesses[len(category_paths) + 1 + depth][expense_id] = subtotal
+                link_amount = min(remaining_income, subtotal)
+                links.append([income_id - 1, expense_id, link_amount])
+                percent_link.append(
+                    link_amount / total_inflow / percent_node[income_id - 1]
+                )
+                if remaining_income < 0:
+                    # deficit branches into discretionary expense
+                    thicknesses[income_level - 1][income_id] = -remaining_income
+                    links.append([income_id, expense_id, -remaining_income])
+                    percent_link.append(-remaining_income / subtotal)
 
         def populate_outflow_nodes(
-            group_name: str, group: pd.DataFrame, depth: int, target_depth: int
+            expense_name: str,
+            expense_group: pd.DataFrame,
+            depth: int,
+            target_depth: int,
+            leaf_expense_ids: list[int],
         ) -> None:
             nonlocal node_id
             if depth == target_depth:
-                if group_name in nodes:
-                    nodes[f"{group_name} income"] = nodes.pop(group_name)
-                    group_name = f"{group_name} expense"
-                nodes[group_name] = node_id
-                sum_amount = group["amount"].sum()
+                if depth == len(category_paths):
+                    leaf_expense_ids.append(node_id)
+                if expense_name in nodes:
+                    nodes[f"{expense_name} income"] = nodes.pop(expense_name)
+                    expense_name = f"{expense_name} expense"
+                nodes[expense_name] = node_id
+                sum_amount = expense_group["amount"].sum()
                 percent_node.append(sum_amount / total_inflow)
-                thicknesses[len(inflow_categories) + offset + depth - 1][
-                    node_id
-                ] = sum_amount
+                category = expense_group["top_level_category"].iloc[0]
+                thicknesses[
+                    len(category_paths)
+                    + 1
+                    + intermediary_expenses.index(category)
+                    + depth
+                ][node_id] = sum_amount
                 colors.append(red)
-                if depth == 1:
-                    links.append([1, node_id, sum_amount])
-                    percent_link.append(sum_amount / total_outflow)
-                else:
-                    source_category = group[outflow_categories[depth - 2]].iloc[0]
+                source_category = category
+                if depth > 1:
+                    source_category = expense_group[category_paths[depth - 2]].iloc[0]
                     if source_category not in nodes:
                         source_category = f"{source_category} expense"
-                    links.append([nodes[source_category], node_id, sum_amount])
-                    percent_link.append(
-                        sum_amount / total_inflow / percent_node[nodes[source_category]]
-                    )
+                links.append([nodes[source_category], node_id, sum_amount])
+                percent_link.append(
+                    sum_amount / total_inflow / percent_node[nodes[source_category]]
+                )
                 node_id += 1
                 return
+
             sorted_group = sorted(
-                group.groupby(outflow_categories[depth], sort=False),
+                expense_group.groupby(category_paths[depth], sort=False),
                 key=lambda x: x[1]["amount"].sum(),
                 reverse=True,
             )
-            for group_name, group in sorted_group:
-                populate_outflow_nodes(group_name, group, depth + 1, target_depth)
+            for expense_name, expense_group in sorted_group:
+                populate_outflow_nodes(
+                    expense_name,
+                    expense_group,
+                    depth + 1,
+                    target_depth,
+                    leaf_expense_ids,
+                )
 
-        for i in range(len(inflow_categories)):
-            populate_inflow_nodes(inflow_categories[i], inflow, 0, i + 1)
-        for i in range(len(outflow_categories)):
-            populate_outflow_nodes(outflow_categories[i], outflow, 0, i + 1)
+        leaf_expense_ids: list[int] = []
+        for i in range(len(category_paths)):
+            populate_inflow_nodes(category_paths[i], inflow, 0, i + 1)
+        populate_outflow_categories()
+        for i in range(len(category_paths)):
+            populate_outflow_nodes(
+                category_paths[i], outflow, 0, i + 1, leaf_expense_ids
+            )
 
         labels = [k for k, _ in sorted(nodes.items(), key=lambda x: x[1])]
         x_positions, y_positions = self.calculate_node_positions(
             thicknesses,
-            anchor_id=0 if net > 0 else 1,
-            anchor_cols=1,
+            anchor_id=0,
+            anchor_xpos=0.4,
+            leaf_expense_ids=leaf_expense_ids,
         )
         source, target, value = zip(*links)
         fig = go.Figure(
@@ -660,38 +715,62 @@ class TransactionVisualizer:
         self,
         column_thicknesses: list[dict[int, float]],
         anchor_id: int = 0,
-        anchor_cols: int = 0,
-    ) -> tuple[list[float | None], list[float | None]]:
-        n_nodes = sum(len(col) for col in column_thicknesses)
-        if anchor_cols > 0:
-            column_thicknesses = column_thicknesses[:-anchor_cols]
+        anchor_xpos: float = 0.5,
+        leaf_expense_ids: list[int] | None = None,
+    ) -> tuple[list[float], list[float]]:
         x_positions = [0.0] * sum(len(col) for col in column_thicknesses)
         y_positions = [0.5] * len(x_positions)
-        for col in column_thicknesses:
+        anchor_col = 0
+        for i, col in enumerate(column_thicknesses):
             if anchor_id in col and len(col) == 1:
+                anchor_col = i
                 max_thickness = col[anchor_id]
+                break
+        left_x_offset = anchor_xpos / anchor_col
+        right_x_offset = (1.0 - anchor_xpos) / (
+            len(column_thicknesses) - anchor_col - 1
+        )
 
         base_spacing = 0.1
-        margin = 0.5
+        min_spacing = 0.02
+        band_width = 0.6
         for idx, col in enumerate(column_thicknesses):
-            x_pos = idx / (len(column_thicknesses) + anchor_cols)
+            x_pos = (
+                left_x_offset * idx
+                if idx < anchor_col
+                else anchor_xpos + right_x_offset * (idx - anchor_col)
+            )
+            for node_id in col.keys():
+                x_positions[node_id] = x_pos
+
+            num_min_spacing = (
+                sum(1 for node_id in col if node_id in leaf_expense_ids)
+                if leaf_expense_ids
+                else 0
+            )
+            num_std_spacing = len(col) - max(1, num_min_spacing)
             factor = abs(anchor_id - idx)
+            spacing = 0.0 if factor == 0 else base_spacing / factor
+            margin = band_width * sum(col.values()) / max_thickness
             while True:
-                spacing = 0.0 if factor == 0 else base_spacing / factor
-                available_space = margin - spacing * (len(col) - 1)
+                available_space = 1.0 - (
+                    margin + min_spacing * num_min_spacing + spacing * num_std_spacing
+                )
                 if available_space > 0:
                     break
                 factor += 1
+                spacing = base_spacing / factor
             y_pos = available_space / 2
             for node_id, thickness in col.items():
-                half_width = thickness / max_thickness * (1.0 - margin) / 2
+                half_width = thickness / max_thickness * band_width / 2
                 y_pos += half_width
-                x_positions[node_id] = x_pos
                 y_positions[node_id] = y_pos
-                y_pos += half_width + spacing
-
-        padding = [None] * (n_nodes - len(x_positions))
-        return x_positions + padding, y_positions + padding
+                y_pos += half_width
+                if leaf_expense_ids and node_id in leaf_expense_ids:
+                    y_pos += min_spacing
+                else:
+                    y_pos += spacing
+        return x_positions, y_positions
 
     def run(self) -> None:
         self.app.run_server(debug=True)
