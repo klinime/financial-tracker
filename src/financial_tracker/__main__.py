@@ -253,20 +253,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO)
     args = parse_args()
     command = args.command
 
+    kwargs = vars(args)
     if command == "visualize":
         visualize_statements([Path(data_dir) for data_dir in args.data_dirs])
     elif command == "multistage":
         for stage in args.stages:
             for data_dir in args.data_dirs:
-                stage_info()[stage]["action"](
-                    Path(data_dir), args.examples_path, args.data_dir
-                )
+                stage_info()[stage]["action"](Path(data_dir), **kwargs)
     else:
-        data_dir = Path(args.data_dir)
-        stage_info()[command]["action"](data_dir, args.examples_path)
+        stage_info()[command]["action"](Path(kwargs.pop("data_dir")), **kwargs)
 
 
 if __name__ == "__main__":
